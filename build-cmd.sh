@@ -38,6 +38,8 @@ mkdir -p "$stage/lib"/{debug,release}
 mkdir -p "$stage/include/sdbus-c++"
 mkdir -p "$stage/LICENSES"
 
+echo "1.2.0" > "${stage}/VERSION.txt"
+
 pushd "$SDBUSCPP_DIR"
     case "$AUTOBUILD_PLATFORM" in
 
@@ -99,7 +101,6 @@ pushd "$SDBUSCPP_DIR"
 
                 mkdir -p ${stage}/lib/debug
                 mv ${stage}/install_debug/lib/*.so* ${stage}/lib/debug
-                mv ${stage}/install_debug/lib/*.a* ${stage}/lib/debug
             popd
 
             # Release
@@ -119,12 +120,12 @@ pushd "$SDBUSCPP_DIR"
 
                 mkdir -p ${stage}/lib/release
                 mv ${stage}/install_release/lib/*.so* ${stage}/lib/release
-                mv ${stage}/install_release/lib/*.a* ${stage}/lib/release
             popd
 
             cp $stage/install_release/include/sdbus-c++/*.h "$stage/include/sdbus-c++"
         ;;
     esac
     mkdir -p "$stage/LICENSES"
-    cp LICENSE "$stage/LICENSES/sdbus-cpp.txt"
+    cp COPYING "$stage/LICENSES/sdbus-cpp.txt"
+    cp COPYING-LGPL-Exception "$stage/LICENSES/sdbus-cpp-addtl.txt"
 popd

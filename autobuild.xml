@@ -42,6 +42,7 @@
           <key>manifest</key>
           <array>
             <string>LICENSES/sdbus-cpp.txt</string>
+            <string>LICENSES/sdbus-cpp-addtl.txt</string>
             <string>include/sdbus-c++/*.h</string>
           </array>
           <key>name</key>
@@ -64,8 +65,8 @@
           </map>
           <key>manifest</key>
           <array>
-            <string>lib/debug/libopenjp2.so*</string>
-            <string>lib/release/libopenjp2.so*</string>
+            <string>lib/debug/libsdbus-c++*</string>
+            <string>lib/release/libsdbus-c++*</string>
           </array>
           <key>name</key>
           <string>linux</string>
