@@ -43,7 +43,7 @@
           <array>
             <string>LICENSES/sdbus-cpp.txt</string>
             <string>LICENSES/sdbus-cpp-addtl.txt</string>
-            <string>include/sdbus-c++/*.h</string>
+            <string>include/sdbus-c++/*.*</string>
           </array>
           <key>name</key>
           <string>common</string>

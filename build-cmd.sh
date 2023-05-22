@@ -122,7 +122,7 @@ pushd "$SDBUSCPP_DIR"
                 mv ${stage}/install_release/lib/*.so* ${stage}/lib/release
             popd
 
-            cp $stage/install_release/include/sdbus-c++/*.h "$stage/include/sdbus-c++"
+            cp $stage/install_release/include/sdbus-c++/*.* "$stage/include/sdbus-c++"
         ;;
     esac
     mkdir -p "$stage/LICENSES"
