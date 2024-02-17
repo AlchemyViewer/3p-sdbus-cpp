@@ -38,6 +38,7 @@
 #include <fstream>
 #include <future>
 #include <unistd.h>
+#include <variant>
 
 using ::testing::ElementsAre;
 using ::testing::Eq;
@@ -45,6 +46,7 @@ using namespace std::chrono_literals;
 using namespace sdbus::test;
 
 using AConnection = TestFixture;
+using ADirectConnection = TestFixtureWithDirectConnection;
 
 /*-------------------------------------*/
 /* --          TEST CASES           -- */
@@ -57,6 +59,18 @@ TEST(AdaptorAndProxy, CanBeConstructedSuccesfully)
 
     ASSERT_NO_THROW(TestAdaptor adaptor(*connection, OBJECT_PATH));
     ASSERT_NO_THROW(TestProxy proxy(BUS_NAME, OBJECT_PATH));
+}
+
+TEST(AProxy, SupportsMoveSemantics)
+{
+    static_assert(std::is_move_constructible_v<DummyTestProxy>);
+    static_assert(std::is_move_assignable_v<DummyTestProxy>);
+}
+
+TEST(AnAdaptor, SupportsMoveSemantics)
+{
+    static_assert(std::is_move_constructible_v<DummyTestAdaptor>);
+    static_assert(std::is_move_assignable_v<DummyTestAdaptor>);
 }
 
 TEST_F(AConnection, WillCallCallbackHandlerForIncomingMessageMatchingMatchRule)
@@ -103,7 +117,8 @@ TEST_F(AConnection, CanAddFloatingMatchRule)
     };
     con->addMatch(matchRule, std::move(callback), sdbus::floating_slot);
     m_adaptor->emitSimpleSignal();
-    assert(waitUntil(matchingMessageReceived, 2s));
+    [[maybe_unused]] auto gotMessage = waitUntil(matchingMessageReceived, 2s);
+    assert(gotMessage);
     matchingMessageReceived = false;
 
     con.reset();
@@ -129,4 +144,15 @@ TEST_F(AConnection, WillNotPassToMatchCallbackMessagesThatDoNotMatchTheRule)
 
     ASSERT_TRUE(waitUntil([&](){ return numberOfMatchingMessages == 2; }));
     ASSERT_FALSE(waitUntil([&](){ return numberOfMatchingMessages > 2; }, 1s));
+}
+
+// A simple direct connection test similar in nature to https://github.com/systemd/systemd/blob/main/src/libsystemd/sd-bus/test-bus-server.c
+TEST_F(ADirectConnection, CanBeUsedBetweenClientAndServer)
+{
+    auto val = m_proxy->sumArrayItems({1, 7}, {2, 3, 4});
+    m_adaptor->emitSimpleSignal();
+
+    // Make sure method call passes and emitted signal is received
+    ASSERT_THAT(val, Eq(1 + 7 + 2 + 3 + 4));
+    ASSERT_TRUE(waitUntil(m_proxy->m_gotSimpleSignal));
 }

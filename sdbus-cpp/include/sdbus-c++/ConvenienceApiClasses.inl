@@ -45,9 +45,9 @@ namespace sdbus {
     /*** MethodRegistrator ***/
     /*** ----------------- ***/
 
-    inline MethodRegistrator::MethodRegistrator(IObject& object, const std::string& methodName)
+    inline MethodRegistrator::MethodRegistrator(IObject& object, std::string methodName)
         : object_(object)
-        , methodName_(methodName)
+        , methodName_(std::move(methodName))
         , exceptions_(std::uncaught_exceptions())
     {
     }
@@ -73,9 +73,9 @@ namespace sdbus {
         object_.registerMethod( interfaceName_
                               , std::move(methodName_)
                               , std::move(inputSignature_)
-                              , std::move(inputParamNames_)
+                              , inputParamNames_
                               , std::move(outputSignature_)
-                              , std::move(outputParamNames_)
+                              , outputParamNames_
                               , std::move(methodCallback_)
                               , std::move(flags_));
     }
@@ -177,9 +177,9 @@ namespace sdbus {
     /*** SignalRegistrator ***/
     /*** ----------------- ***/
 
-    inline SignalRegistrator::SignalRegistrator(IObject& object, const std::string& signalName)
+    inline SignalRegistrator::SignalRegistrator(IObject& object, std::string signalName)
         : object_(object)
-        , signalName_(signalName)
+        , signalName_(std::move(signalName))
         , exceptions_(std::uncaught_exceptions())
     {
     }
@@ -204,7 +204,7 @@ namespace sdbus {
         object_.registerSignal( interfaceName_
                               , std::move(signalName_)
                               , std::move(signalSignature_)
-                              , std::move(paramNames_)
+                              , paramNames_
                               , std::move(flags_) );
     }
 
@@ -293,7 +293,7 @@ namespace sdbus {
     template <typename _Function>
     inline PropertyRegistrator& PropertyRegistrator::withGetter(_Function&& callback)
     {
-        static_assert(function_traits<_Function>::arity == 0, "Property getter function must not take any arguments");
+        static_assert(function_argument_count_v<_Function> == 0, "Property getter function must not take any arguments");
         static_assert(!std::is_void<function_result_t<_Function>>::value, "Property getter function must return property value");
 
         if (propertySignature_.empty())
@@ -311,7 +311,7 @@ namespace sdbus {
     template <typename _Function>
     inline PropertyRegistrator& PropertyRegistrator::withSetter(_Function&& callback)
     {
-        static_assert(function_traits<_Function>::arity == 1, "Property setter function must take one parameter - the property value");
+        static_assert(function_argument_count_v<_Function> == 1, "Property setter function must take one parameter - the property value");
         static_assert(std::is_void<function_result_t<_Function>>::value, "Property setter function must not return any value");
 
         if (propertySignature_.empty())
@@ -610,6 +610,29 @@ namespace sdbus {
         return proxy_.callMethod(method_, std::move(asyncReplyHandler), timeout_);
     }
 
+    template <typename... _Args>
+    std::future<future_return_t<_Args...>> AsyncMethodInvoker::getResultAsFuture()
+    {
+        auto promise = std::make_shared<std::promise<future_return_t<_Args...>>>();
+        auto future = promise->get_future();
+
+        uponReplyInvoke([promise = std::move(promise)](const Error* error, _Args... args)
+        {
+            if (error == nullptr)
+                if constexpr (!std::is_void_v<future_return_t<_Args...>>)
+                    promise->set_value({std::move(args)...});
+                else
+                    promise->set_value();
+            else
+                promise->set_exception(std::make_exception_ptr(*error));
+        });
+
+        // Will be std::future<void> for no D-Bus method return value
+        //      or std::future<T> for single D-Bus method return value
+        //      or std::future<std::tuple<...>> for multiple method return values
+        return future;
+    }
+
     /*** ---------------- ***/
     /*** SignalSubscriber ***/
     /*** ---------------- ***/
@@ -681,7 +704,7 @@ namespace sdbus {
     {
     }
 
-    inline void SignalUnsubscriber::onInterface(std::string interfaceName)
+    inline void SignalUnsubscriber::onInterface(const std::string& interfaceName)
     {
         proxy_.unregisterSignalHandler(interfaceName, signalName_);
     }
@@ -696,15 +719,54 @@ namespace sdbus {
     {
     }
 
-    inline sdbus::Variant PropertyGetter::onInterface(const std::string& interfaceName)
+    inline Variant PropertyGetter::onInterface(const std::string& interfaceName)
     {
-        sdbus::Variant var;
-        proxy_
-            .callMethod("Get")
-            .onInterface("org.freedesktop.DBus.Properties")
-            .withArguments(interfaceName, propertyName_)
-            .storeResultsTo(var);
+        Variant var;
+        proxy_.callMethod("Get")
+              .onInterface("org.freedesktop.DBus.Properties")
+              .withArguments(interfaceName, propertyName_)
+              .storeResultsTo(var);
         return var;
+    }
+
+    /*** ------------------- ***/
+    /*** AsyncPropertyGetter ***/
+    /*** ------------------- ***/
+
+    inline AsyncPropertyGetter::AsyncPropertyGetter(IProxy& proxy, const std::string& propertyName)
+            : proxy_(proxy)
+            , propertyName_(propertyName)
+    {
+    }
+
+    inline AsyncPropertyGetter& AsyncPropertyGetter::onInterface(const std::string& interfaceName)
+    {
+        interfaceName_ = &interfaceName;
+
+        return *this;
+    }
+
+    template <typename _Function>
+    PendingAsyncCall AsyncPropertyGetter::uponReplyInvoke(_Function&& callback)
+    {
+        static_assert(std::is_invocable_r_v<void, _Function, const Error*, Variant>, "Property get callback function must accept Error* and property value as Variant");
+
+        assert(interfaceName_ != nullptr); // onInterface() must be placed/called prior to this function
+
+        return proxy_.callMethodAsync("Get")
+                     .onInterface("org.freedesktop.DBus.Properties")
+                     .withArguments(*interfaceName_, propertyName_)
+                     .uponReplyInvoke(std::forward<_Function>(callback));
+    }
+
+    inline std::future<Variant> AsyncPropertyGetter::getResultAsFuture()
+    {
+        assert(interfaceName_ != nullptr); // onInterface() must be placed/called prior to this function
+
+        return proxy_.callMethodAsync("Get")
+                     .onInterface("org.freedesktop.DBus.Properties")
+                     .withArguments(*interfaceName_, propertyName_)
+                     .getResultAsFuture<Variant>();
     }
 
     /*** -------------- ***/
@@ -717,9 +779,9 @@ namespace sdbus {
     {
     }
 
-    inline PropertySetter& PropertySetter::onInterface(std::string interfaceName)
+    inline PropertySetter& PropertySetter::onInterface(const std::string& interfaceName)
     {
-        interfaceName_ = std::move(interfaceName);
+        interfaceName_ = &interfaceName;
 
         return *this;
     }
@@ -727,17 +789,144 @@ namespace sdbus {
     template <typename _Value>
     inline void PropertySetter::toValue(const _Value& value)
     {
-        PropertySetter::toValue(sdbus::Variant{value});
+        PropertySetter::toValue(Variant{value});
     }
 
-    inline void PropertySetter::toValue(const sdbus::Variant& value)
+    template <typename _Value>
+    inline void PropertySetter::toValue(const _Value& value, dont_expect_reply_t)
     {
-        assert(!interfaceName_.empty()); // onInterface() must be placed/called prior to this function
+        PropertySetter::toValue(Variant{value}, dont_expect_reply);
+    }
 
-        proxy_
-            .callMethod("Set")
-            .onInterface("org.freedesktop.DBus.Properties")
-            .withArguments(interfaceName_, propertyName_, value);
+    inline void PropertySetter::toValue(const Variant& value)
+    {
+        assert(interfaceName_ != nullptr); // onInterface() must be placed/called prior to this function
+
+        proxy_.callMethod("Set")
+              .onInterface("org.freedesktop.DBus.Properties")
+              .withArguments(*interfaceName_, propertyName_, value);
+    }
+
+    inline void PropertySetter::toValue(const Variant& value, dont_expect_reply_t)
+    {
+        assert(interfaceName_ != nullptr); // onInterface() must be placed/called prior to this function
+
+        proxy_.callMethod("Set")
+                .onInterface("org.freedesktop.DBus.Properties")
+                .withArguments(*interfaceName_, propertyName_, value)
+                .dontExpectReply();
+    }
+
+    /*** ------------------- ***/
+    /*** AsyncPropertySetter ***/
+    /*** ------------------- ***/
+
+    inline AsyncPropertySetter::AsyncPropertySetter(IProxy& proxy, const std::string& propertyName)
+            : proxy_(proxy)
+            , propertyName_(propertyName)
+    {
+    }
+
+    inline AsyncPropertySetter& AsyncPropertySetter::onInterface(const std::string& interfaceName)
+    {
+        interfaceName_ = &interfaceName;
+
+        return *this;
+    }
+
+    template <typename _Value>
+    inline AsyncPropertySetter& AsyncPropertySetter::toValue(_Value&& value)
+    {
+        return AsyncPropertySetter::toValue(Variant{std::forward<_Value>(value)});
+    }
+
+    inline AsyncPropertySetter& AsyncPropertySetter::toValue(Variant value)
+    {
+        value_ = std::move(value);
+
+        return *this;
+    }
+
+    template <typename _Function>
+    PendingAsyncCall AsyncPropertySetter::uponReplyInvoke(_Function&& callback)
+    {
+        static_assert(std::is_invocable_r_v<void, _Function, const Error*>, "Property set callback function must accept Error* only");
+
+        assert(interfaceName_ != nullptr); // onInterface() must be placed/called prior to this function
+
+        return proxy_.callMethodAsync("Set")
+                     .onInterface("org.freedesktop.DBus.Properties")
+                     .withArguments(*interfaceName_, propertyName_, std::move(value_))
+                     .uponReplyInvoke(std::forward<_Function>(callback));
+    }
+
+    inline std::future<void> AsyncPropertySetter::getResultAsFuture()
+    {
+        assert(interfaceName_ != nullptr); // onInterface() must be placed/called prior to this function
+
+        return proxy_.callMethodAsync("Set")
+                     .onInterface("org.freedesktop.DBus.Properties")
+                     .withArguments(*interfaceName_, propertyName_, std::move(value_))
+                     .getResultAsFuture<>();
+    }
+
+    /*** ------------------- ***/
+    /*** AllPropertiesGetter ***/
+    /*** ------------------- ***/
+
+    inline AllPropertiesGetter::AllPropertiesGetter(IProxy& proxy)
+            : proxy_(proxy)
+    {
+    }
+
+    inline std::map<std::string, Variant> AllPropertiesGetter::onInterface(const std::string& interfaceName)
+    {
+        std::map<std::string, Variant> props;
+        proxy_.callMethod("GetAll")
+                .onInterface("org.freedesktop.DBus.Properties")
+                .withArguments(interfaceName)
+                .storeResultsTo(props);
+        return props;
+    }
+
+    /*** ------------------------ ***/
+    /*** AsyncAllPropertiesGetter ***/
+    /*** ------------------------ ***/
+
+    inline AsyncAllPropertiesGetter::AsyncAllPropertiesGetter(IProxy& proxy)
+            : proxy_(proxy)
+    {
+    }
+
+    inline AsyncAllPropertiesGetter& AsyncAllPropertiesGetter::onInterface(const std::string& interfaceName)
+    {
+        interfaceName_ = &interfaceName;
+
+        return *this;
+    }
+
+    template <typename _Function>
+    PendingAsyncCall AsyncAllPropertiesGetter::uponReplyInvoke(_Function&& callback)
+    {
+        static_assert( std::is_invocable_r_v<void, _Function, const Error*, std::map<std::string, Variant>>
+                     , "All properties get callback function must accept Error* and a map of property names to their values" );
+
+        assert(interfaceName_ != nullptr); // onInterface() must be placed/called prior to this function
+
+        return proxy_.callMethodAsync("GetAll")
+                     .onInterface("org.freedesktop.DBus.Properties")
+                     .withArguments(*interfaceName_)
+                     .uponReplyInvoke(std::forward<_Function>(callback));
+    }
+
+    inline std::future<std::map<std::string, Variant>> AsyncAllPropertiesGetter::getResultAsFuture()
+    {
+        assert(interfaceName_ != nullptr); // onInterface() must be placed/called prior to this function
+
+        return proxy_.callMethodAsync("GetAll")
+                     .onInterface("org.freedesktop.DBus.Properties")
+                     .withArguments(*interfaceName_)
+                     .getResultAsFuture<std::map<std::string, Variant>>();
     }
 
 }

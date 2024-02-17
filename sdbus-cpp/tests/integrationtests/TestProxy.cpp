@@ -30,13 +30,20 @@
 #include <atomic>
 
 namespace sdbus { namespace test {
-    
+
 TestProxy::TestProxy(std::string destination, std::string objectPath)
     : ProxyInterfaces(std::move(destination), std::move(objectPath))
 {
     getProxy().uponSignal("signalWithoutRegistration").onInterface(sdbus::test::INTERFACE_NAME).call([this](const sdbus::Struct<std::string, sdbus::Struct<sdbus::Signature>>& s){ this->onSignalWithoutRegistration(s); });
 
     registerProxy();
+}
+
+TestProxy::TestProxy(std::string destination, std::string objectPath, dont_run_event_loop_thread_t)
+    : ProxyInterfaces(std::move(destination), std::move(objectPath), dont_run_event_loop_thread)
+{
+    // It doesn't make sense to register any signals here since proxy upon a D-Bus connection with no event loop thread
+    // will not receive any incoming messages except replies to synchronous D-Bus calls.
 }
 
 TestProxy::TestProxy(sdbus::IConnection& connection, std::string destination, std::string objectPath)
@@ -116,6 +123,22 @@ sdbus::PendingAsyncCall TestProxy::doOperationClientSideAsync(uint32_t param)
                                       });
 }
 
+std::future<uint32_t> TestProxy::doOperationClientSideAsync(uint32_t param, with_future_t)
+{
+    return getProxy().callMethodAsync("doOperation")
+                     .onInterface(sdbus::test::INTERFACE_NAME)
+                     .withArguments(param)
+                     .getResultAsFuture<uint32_t>();
+}
+
+std::future<MethodReply> TestProxy::doOperationClientSideAsyncOnBasicAPILevel(uint32_t param)
+{
+    auto methodCall = getProxy().createMethodCall(sdbus::test::INTERFACE_NAME, "doOperation");
+    methodCall << param;
+
+    return getProxy().callMethod(methodCall, sdbus::with_future);
+}
+
 void TestProxy::doErroneousOperationClientSideAsync()
 {
     getProxy().callMethodAsync("throwError")
@@ -124,6 +147,13 @@ void TestProxy::doErroneousOperationClientSideAsync()
                                {
                                    this->onDoOperationReply(0, error);
                                });
+}
+
+std::future<void> TestProxy::doErroneousOperationClientSideAsync(with_future_t)
+{
+    return getProxy().callMethodAsync("throwError")
+                     .onInterface(sdbus::test::INTERFACE_NAME)
+                     .getResultAsFuture<>();
 }
 
 void TestProxy::doOperationClientSideAsyncWithTimeout(const std::chrono::microseconds &timeout, uint32_t param)

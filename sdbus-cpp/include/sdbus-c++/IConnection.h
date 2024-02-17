@@ -34,6 +34,8 @@
 #include <cstdint>
 #include <optional>
 
+struct sd_bus;
+
 namespace sdbus {
 
     /********************************************//**
@@ -293,7 +295,6 @@ namespace sdbus {
          *
          * @param[in] match Match expression to filter incoming D-Bus message
          * @param[in] callback Callback handler to be called upon incoming D-Bus message matching the rule
-         * @param[in] Floating slot tag
          *
          * The method installs a floating match rule for messages received on the specified bus connection.
          * Floating means that the bus connection object owns the match rule, i.e. lifetime of the match rule
@@ -314,21 +315,21 @@ namespace sdbus {
         [[deprecated("This function has been replaced by enterEventLoop()")]] void enterProcessingLoop();
 
         /*!
-         * @copydoc IConnection::enterProcessingLoopAsync()
+         * @copydoc IConnection::enterEventLoopAsync()
          *
          * @deprecated This function has been replaced by enterEventLoopAsync()
          */
         [[deprecated("This function has been replaced by enterEventLoopAsync()")]] void enterProcessingLoopAsync();
 
         /*!
-         * @copydoc IConnection::leaveProcessingLoop()
+         * @copydoc IConnection::leaveEventLoop()
          *
          * @deprecated This function has been replaced by leaveEventLoop()
          */
         [[deprecated("This function has been replaced by leaveEventLoop()")]] void leaveProcessingLoop();
 
         /*!
-         * @copydoc IConnection::getProcessLoopPollData()
+         * @copydoc IConnection::getEventLoopPollData()
          *
          * @deprecated This function has been replaced by getEventLoopPollData()
          */
@@ -459,6 +460,74 @@ namespace sdbus {
      * @throws sdbus::Error in case of failure
      */
     [[nodiscard]] std::unique_ptr<sdbus::IConnection> createRemoteSystemBusConnection(const std::string& host);
+
+    /*!
+     * @brief Opens direct D-Bus connection at a custom address
+     *
+     * @param[in] address ";"-separated list of addresses of bus brokers to try to connect to
+     * @return Connection instance
+     *
+     * @throws sdbus::Error in case of failure
+     */
+    [[nodiscard]] std::unique_ptr<sdbus::IConnection> createDirectBusConnection(const std::string& address);
+
+    /*!
+     * @brief Opens direct D-Bus connection at the given file descriptor
+     *
+     * @param[in] fd File descriptor used to communicate directly from/to a D-Bus server
+     * @return Connection instance
+     *
+     * The underlying sdbus-c++ connection instance takes over ownership of fd, so the caller can let it go.
+     * If, however, the call throws an exception, the ownership of fd remains with the caller.
+     *
+     * @throws sdbus::Error in case of failure
+     */
+    [[nodiscard]] std::unique_ptr<sdbus::IConnection> createDirectBusConnection(int fd);
+
+    /*!
+     * @brief Opens direct D-Bus connection at fd as a server
+     *
+     * @param[in] fd File descriptor to use for server DBus connection
+     * @return Server connection instance
+     *
+     * This creates a new, custom bus object in server mode. One can then call createDirectBusConnection()
+     * on client side to connect to this bus.
+     *
+     * The underlying sdbus-c++ connection instance takes over ownership of fd, so the caller can let it go.
+     * If, however, the call throws an exception, the ownership of fd remains with the caller.
+     *
+     * @throws sdbus::Error in case of failure
+     */
+    [[nodiscard]] std::unique_ptr<sdbus::IConnection> createServerBus(int fd);
+
+    /*!
+     * @brief Creates sdbus-c++ bus connection representation out of underlying sd_bus instance
+     *
+     * @param[in] bus File descriptor to use for server DBus connection
+     * @return Connection instance
+     *
+     * This functions is helpful in cases where clients need a custom, tweaked configuration of their
+     * bus object. Since sdbus-c++ does not provide C++ API for all bus connection configuration
+     * functions of the underlying sd-bus library, clients can use these sd-bus functions themselves
+     * to create and configure their sd_bus object, and create sdbus-c++ IConnection on top of it.
+     *
+     * The IConnection instance assumes unique ownership of the provided bus object. The bus object
+     * must have been started by the client before this call.
+     * The bus object will get flushed, closed, and unreffed when the IConnection instance is destroyed.
+     *
+     * @throws sdbus::Error in case of failure
+     *
+     * Code example:
+     * @code
+     * sd_bus* bus{};
+     * ::sd_bus_new(&bus);
+     * ::sd_bus_set_address(bus, address);
+     * ::sd_bus_set_anonymous(bus, true);
+     * ::sd_bus_start(bus);
+     * auto con = sdbus::createBusConnection(bus); // IConnection consumes sd_bus object
+     * @endcode
+     */
+    [[nodiscard]] std::unique_ptr<sdbus::IConnection> createBusConnection(sd_bus *bus);
 }
 
 #endif /* SDBUS_CXX_ICONNECTION_H_ */

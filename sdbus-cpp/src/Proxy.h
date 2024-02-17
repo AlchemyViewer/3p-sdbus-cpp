@@ -29,11 +29,11 @@
 
 #include <sdbus-c++/IProxy.h>
 #include "IConnection.h"
-#include <systemd/sd-bus.h>
+#include SDBUS_HEADER
 #include <string>
 #include <memory>
 #include <map>
-#include <unordered_map>
+#include <deque>
 #include <mutex>
 #include <atomic>
 #include <condition_variable>
@@ -50,10 +50,16 @@ namespace sdbus::internal {
         Proxy( std::unique_ptr<sdbus::internal::IConnection>&& connection
              , std::string destination
              , std::string objectPath );
+        Proxy( std::unique_ptr<sdbus::internal::IConnection>&& connection
+             , std::string destination
+             , std::string objectPath
+             , dont_run_event_loop_thread_t );
 
         MethodCall createMethodCall(const std::string& interfaceName, const std::string& methodName) override;
         MethodReply callMethod(const MethodCall& message, uint64_t timeout) override;
         PendingAsyncCall callMethod(const MethodCall& message, async_reply_handler asyncReplyCallback, uint64_t timeout) override;
+        std::future<MethodReply> callMethod(const MethodCall& message, with_future_t) override;
+        std::future<MethodReply> callMethod(const MethodCall& message, uint64_t timeout, with_future_t) override;
 
         void registerSignalHandler( const std::string& interfaceName
                                   , const std::string& signalName
@@ -129,9 +135,16 @@ namespace sdbus::internal {
         public:
             struct CallData
             {
+                enum class State
+                {   NOT_ASYNC
+                ,   RUNNING
+                ,   FINISHED
+                };
+
                 Proxy& proxy;
                 async_reply_handler callback;
                 Slot slot;
+                State state;
             };
 
             ~AsyncCalls()
@@ -139,18 +152,20 @@ namespace sdbus::internal {
                 clear();
             }
 
-            bool addCall(void* slot, std::shared_ptr<CallData> asyncCallData)
+            void addCall(std::shared_ptr<CallData> asyncCallData)
             {
                 std::lock_guard lock(mutex_);
-                return calls_.emplace(slot, std::move(asyncCallData)).second;
+                if (asyncCallData->state != CallData::State::FINISHED) // The call may have finished in the meantime
+                    calls_.emplace_back(std::move(asyncCallData));
             }
 
-            void removeCall(void* slot)
+            void removeCall(CallData* data)
             {
                 std::unique_lock lock(mutex_);
-                if (auto it = calls_.find(slot); it != calls_.end())
+                data->state = CallData::State::FINISHED;
+                if (auto it = std::find_if(calls_.begin(), calls_.end(), [data](auto const& entry){ return entry.get() == data; }); it != calls_.end())
                 {
-                    auto callData = std::move(it->second);
+                    auto callData = std::move(*it);
                     calls_.erase(it);
                     lock.unlock();
 
@@ -176,7 +191,7 @@ namespace sdbus::internal {
 
         private:
             std::mutex mutex_;
-            std::unordered_map<void*, std::shared_ptr<CallData>> calls_;
+            std::deque<std::shared_ptr<CallData>> calls_;
         } pendingAsyncCalls_;
 
         std::atomic<const Message*> m_CurrentlyProcessedMessage{nullptr};

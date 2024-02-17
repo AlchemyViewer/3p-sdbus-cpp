@@ -29,18 +29,19 @@
 
 #include <sdbus-c++/Message.h>
 #include <sdbus-c++/TypeTraits.h>
+#include <sdbus-c++/Types.h>
 #include <sdbus-c++/Flags.h>
 #include <string>
 #include <vector>
 #include <type_traits>
 #include <chrono>
+#include <future>
 #include <cstdint>
 
 // Forward declarations
 namespace sdbus {
     class IObject;
     class IProxy;
-    class Variant;
     class Error;
     class PendingAsyncCall;
 }
@@ -50,7 +51,7 @@ namespace sdbus {
     class MethodRegistrator
     {
     public:
-        MethodRegistrator(IObject& object, const std::string& methodName);
+        MethodRegistrator(IObject& object, std::string methodName);
         MethodRegistrator(MethodRegistrator&& other) = default;
         ~MethodRegistrator() noexcept(false);
 
@@ -66,7 +67,7 @@ namespace sdbus {
 
     private:
         IObject& object_;
-        const std::string& methodName_;
+        std::string methodName_;
         std::string interfaceName_;
         std::string inputSignature_;
         std::vector<std::string> inputParamNames_;
@@ -80,7 +81,7 @@ namespace sdbus {
     class SignalRegistrator
     {
     public:
-        SignalRegistrator(IObject& object, const std::string& signalName);
+        SignalRegistrator(IObject& object, std::string signalName);
         SignalRegistrator(SignalRegistrator&& other) = default;
         ~SignalRegistrator() noexcept(false);
 
@@ -92,7 +93,7 @@ namespace sdbus {
 
     private:
         IObject& object_;
-        const std::string& signalName_;
+        std::string signalName_;
         std::string interfaceName_;
         std::string signalSignature_;
         std::vector<std::string> paramNames_;
@@ -195,6 +196,10 @@ namespace sdbus {
         AsyncMethodInvoker& withTimeout(const std::chrono::duration<_Rep, _Period>& timeout);
         template <typename... _Args> AsyncMethodInvoker& withArguments(_Args&&... args);
         template <typename _Function> PendingAsyncCall uponReplyInvoke(_Function&& callback);
+        // Returned future will be std::future<void> for no (void) D-Bus method return value
+        //                      or std::future<T> for single D-Bus method return value
+        //                      or std::future<std::tuple<...>> for multiple method return values
+        template <typename... _Args> std::future<future_return_t<_Args...>> getResultAsFuture();
 
     private:
         IProxy& proxy_;
@@ -220,7 +225,7 @@ namespace sdbus {
     {
     public:
         SignalUnsubscriber(IProxy& proxy, const std::string& signalName);
-        void onInterface(std::string interfaceName);
+        void onInterface(const std::string& interfaceName);
 
     private:
         IProxy& proxy_;
@@ -231,25 +236,81 @@ namespace sdbus {
     {
     public:
         PropertyGetter(IProxy& proxy, const std::string& propertyName);
-        sdbus::Variant onInterface(const std::string& interfaceName);
+        Variant onInterface(const std::string& interfaceName);
 
     private:
         IProxy& proxy_;
         const std::string& propertyName_;
     };
 
-    class PropertySetter
+    class AsyncPropertyGetter
     {
     public:
-        PropertySetter(IProxy& proxy, const std::string& propertyName);
-        PropertySetter& onInterface(std::string interfaceName);
-        template <typename _Value> void toValue(const _Value& value);
-        void toValue(const sdbus::Variant& value);
+        AsyncPropertyGetter(IProxy& proxy, const std::string& propertyName);
+        AsyncPropertyGetter& onInterface(const std::string& interfaceName);
+        template <typename _Function> PendingAsyncCall uponReplyInvoke(_Function&& callback);
+        std::future<Variant> getResultAsFuture();
 
     private:
         IProxy& proxy_;
         const std::string& propertyName_;
-        std::string interfaceName_;
+        const std::string* interfaceName_{};
+    };
+
+    class PropertySetter
+    {
+    public:
+        PropertySetter(IProxy& proxy, const std::string& propertyName);
+        PropertySetter& onInterface(const std::string& interfaceName);
+        template <typename _Value> void toValue(const _Value& value);
+        template <typename _Value> void toValue(const _Value& value, dont_expect_reply_t);
+        void toValue(const Variant& value);
+        void toValue(const Variant& value, dont_expect_reply_t);
+
+    private:
+        IProxy& proxy_;
+        const std::string& propertyName_;
+        const std::string* interfaceName_{};
+    };
+
+    class AsyncPropertySetter
+    {
+    public:
+        AsyncPropertySetter(IProxy& proxy, const std::string& propertyName);
+        AsyncPropertySetter& onInterface(const std::string& interfaceName);
+        template <typename _Value> AsyncPropertySetter& toValue(_Value&& value);
+        AsyncPropertySetter& toValue(Variant value);
+        template <typename _Function> PendingAsyncCall uponReplyInvoke(_Function&& callback);
+        std::future<void> getResultAsFuture();
+
+    private:
+        IProxy& proxy_;
+        const std::string& propertyName_;
+        const std::string* interfaceName_{};
+        Variant value_;
+    };
+
+    class AllPropertiesGetter
+    {
+    public:
+        AllPropertiesGetter(IProxy& proxy);
+        std::map<std::string, Variant> onInterface(const std::string& interfaceName);
+
+    private:
+        IProxy& proxy_;
+    };
+
+    class AsyncAllPropertiesGetter
+    {
+    public:
+        AsyncAllPropertiesGetter(IProxy& proxy);
+        AsyncAllPropertiesGetter& onInterface(const std::string& interfaceName);
+        template <typename _Function> PendingAsyncCall uponReplyInvoke(_Function&& callback);
+        std::future<std::map<std::string, Variant>> getResultAsFuture();
+
+    private:
+        IProxy& proxy_;
+        const std::string* interfaceName_{};
     };
 
 }

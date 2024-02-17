@@ -427,8 +427,8 @@ int main(int argc, char *argv[])
                 while (!stopClients)
                 {
                     std::map<std::string, sdbus::Variant> param;
-                    param["key1"] = "sdbus-c++-stress-tests";
-                    param["key2"] = ++localCounter;
+                    param["key1"] = sdbus::Variant{"sdbus-c++-stress-tests"};
+                    param["key2"] = sdbus::Variant{++localCounter};
 
                     concatenator.concatenate(param);
 
@@ -509,6 +509,6 @@ int main(int argc, char *argv[])
 
     exitLogger = true;
     loggerThread.join();
-    
+
     return 0;
 }

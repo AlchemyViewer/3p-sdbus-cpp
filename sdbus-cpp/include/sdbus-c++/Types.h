@@ -42,7 +42,7 @@ namespace sdbus {
      * @class Variant
      *
      * Variant can hold value of any D-Bus-supported type.
-     * 
+     *
      * Note: Even though thread-aware, Variant objects are not thread-safe.
      * Some const methods are conceptually const, but not physically const,
      * thus are not thread-safe. This is by design: normally, clients
@@ -56,7 +56,7 @@ namespace sdbus {
         Variant();
 
         template <typename _ValueType>
-        Variant(const _ValueType& value)
+        /*explicit*/ Variant(const _ValueType& value) // TODO: Mark explicit in new major version so we don't break client code within v1
             : Variant()
         {
             msg_.openVariant(signature_of<_ValueType>::str());
@@ -104,6 +104,10 @@ namespace sdbus {
      *
      * Representation of struct D-Bus type
      *
+     * Struct implements tuple protocol, i.e. it's a tuple-like class.
+     * It can be used with std::get<>(), std::tuple_element,
+     * std::tuple_size and in structured bindings.
+     *
      ***********************************************/
     template <typename... _ValueTypes>
     class Struct
@@ -112,7 +116,7 @@ namespace sdbus {
     public:
         using std::tuple<_ValueTypes...>::tuple;
 
-        // Disable constructor if an older then 7.1.0 version of GCC is used 
+        // Disable constructor if an older then 7.1.0 version of GCC is used
 #if !((defined(__GNUC__) || defined(__GNUG__)) && !defined(__clang__) && !(__GNUC__ > 7 || (__GNUC__ == 7 && (__GNUC_MINOR__ > 1 || (__GNUC_MINOR__ == 1 && __GNUC_PATCHLEVEL__ > 0)))))
         Struct() = default;
 
@@ -134,6 +138,9 @@ namespace sdbus {
             return std::get<_I>(*this);
         }
     };
+
+    template <typename... _Elements>
+    Struct(_Elements...) -> Struct<_Elements...>;
 
     template<typename... _Elements>
     constexpr Struct<std::decay_t<_Elements>...>
@@ -279,5 +286,15 @@ namespace sdbus {
     };
 
 }
+
+template <size_t _I, typename... _ValueTypes>
+struct std::tuple_element<_I, sdbus::Struct<_ValueTypes...>>
+    : std::tuple_element<_I, std::tuple<_ValueTypes...>>
+{};
+
+template <typename... _ValueTypes>
+struct std::tuple_size<sdbus::Struct<_ValueTypes...>>
+    : std::tuple_size<std::tuple<_ValueTypes...>>
+{};
 
 #endif /* SDBUS_CXX_TYPES_H_ */

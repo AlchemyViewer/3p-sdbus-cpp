@@ -31,7 +31,7 @@
 #include "ISdBus.h"
 #include "IConnection.h"
 #include "ScopeGuard.h"
-#include <systemd/sd-bus.h>
+#include SDBUS_HEADER
 #include <cassert>
 
 namespace sdbus {
@@ -226,6 +226,13 @@ Message& Message::operator<<(const UnixFd &item)
     return *this;
 }
 
+Message& Message::appendArray(char type, const void *ptr, size_t size)
+{
+    auto r = sd_bus_message_append_array((sd_bus_message*)msg_, type, ptr, size);
+    SDBUS_THROW_ERROR_IF(r < 0, "Failed to serialize an array", -r);
+
+    return *this;
+}
 
 Message& Message::operator>>(bool& item)
 {
@@ -314,6 +321,17 @@ Message& Message::operator>>(uint64_t& item)
         ok_ = false;
 
     SDBUS_THROW_ERROR_IF(r < 0, "Failed to deserialize a uint64_t value", -r);
+
+    return *this;
+}
+
+Message& Message::readArray(char type, const void **ptr, size_t *size)
+{
+    auto r = sd_bus_message_read_array((sd_bus_message*)msg_, type, ptr, size);
+    if (r == 0)
+        ok_ = false;
+
+    SDBUS_THROW_ERROR_IF(r < 0, "Failed to deserialize an array", -r);
 
     return *this;
 }
@@ -630,6 +648,11 @@ bool Message::isEmpty() const
     return sd_bus_message_is_empty((sd_bus_message*)msg_) != 0;
 }
 
+bool Message::isAtEnd(bool complete) const
+{
+    return sd_bus_message_at_end((sd_bus_message*)msg_, complete) > 0;
+}
+
 pid_t Message::getCredsPid() const
 {
     uint64_t mask = SD_BUS_CREDS_PID | SD_BUS_CREDS_AUGMENT;
@@ -862,15 +885,57 @@ void Signal::setDestination(const std::string& destination)
     SDBUS_THROW_ERROR_IF(r < 0, "Failed to set signal destination", -r);
 }
 
+namespace {
+
+// Pseudo-connection lifetime handling. In standard cases, we could do with simply function-local static pseudo
+// connection instance below. However, it may happen that client's sdbus-c++ objects outlive this static connection
+// instance (because they are used in global application objects that were created before this connection, and thus
+// are destroyed later). This by itself sounds like a smell in client's application design, but it is downright bad
+// in sdbus-c++ because it has no control over when client's dependent statics get destroyed. A "Phoenix" pattern
+// (see Modern C++ Design - Generic Programming and Design Patterns Applied, by Andrei Alexandrescu) is applied to fix
+// this by re-creating the connection again in such cases and keeping it alive until the next exit handler is invoked.
+// Please note that the solution is NOT thread-safe.
+// Another common solution is global sdbus-c++ startup/shutdown functions, but that would be an intrusive change.
+
+/*constinit (C++20 keyword) */ static bool pseudoConnectionDestroyed{};
+
+std::unique_ptr<sdbus::internal::IConnection, void(*)(sdbus::internal::IConnection*)> createPseudoConnection()
+{
+    auto deleter = [](sdbus::internal::IConnection* con)
+    {
+        delete con;
+        pseudoConnectionDestroyed = true;
+    };
+
+    return {internal::createPseudoConnection().release(), std::move(deleter)};
+}
+
+sdbus::internal::IConnection& getPseudoConnectionInstance()
+{
+    static auto connection = createPseudoConnection();
+
+    if (pseudoConnectionDestroyed)
+    {
+        connection = createPseudoConnection(); // Phoenix rising from the ashes
+        atexit([](){ connection.~unique_ptr(); }); // We have to manually take care of deleting the phoenix
+        pseudoConnectionDestroyed = false;
+    }
+
+    assert(connection != nullptr);
+
+    return *connection;
+}
+
+}
+
 PlainMessage createPlainMessage()
 {
-    //static auto connection = internal::createConnection();
     // Let's create a pseudo connection -- one that does not really connect to the real bus.
     // This is a bit of a hack, but it enables use to work with D-Bus message locally without
     // the need of D-Bus daemon. This is especially useful in unit tests of both sdbus-c++ and client code.
     // Additionally, it's light-weight and fast solution.
-    static auto connection = internal::createPseudoConnection();
-    return connection->createPlainMessage();
+    auto& connection = getPseudoConnectionInstance();
+    return connection.createPlainMessage();
 }
 
 }

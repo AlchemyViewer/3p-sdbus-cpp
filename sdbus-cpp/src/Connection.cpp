@@ -31,7 +31,7 @@
 #include <sdbus-c++/Message.h>
 #include <sdbus-c++/Error.h>
 #include "ScopeGuard.h"
-#include <systemd/sd-bus.h>
+#include SDBUS_HEADER
 #include <unistd.h>
 #include <poll.h>
 #include <sys/eventfd.h>
@@ -67,6 +67,26 @@ Connection::Connection(std::unique_ptr<ISdBus>&& interface, custom_session_bus_t
 
 Connection::Connection(std::unique_ptr<ISdBus>&& interface, remote_system_bus_t, const std::string& host)
     : Connection(std::move(interface), [this, &host](sd_bus** bus){ return iface_->sd_bus_open_system_remote(bus, host.c_str()); })
+{
+}
+
+Connection::Connection(std::unique_ptr<ISdBus>&& interface, private_bus_t, const std::string& address)
+    : Connection(std::move(interface), [&](sd_bus** bus) { return iface_->sd_bus_open_direct(bus, address.c_str()); })
+{
+}
+
+Connection::Connection(std::unique_ptr<ISdBus>&& interface, private_bus_t, int fd)
+        : Connection(std::move(interface), [&](sd_bus** bus) { return iface_->sd_bus_open_direct(bus, fd); })
+{
+}
+
+Connection::Connection(std::unique_ptr<ISdBus>&& interface, server_bus_t, int fd)
+    : Connection(std::move(interface), [&](sd_bus** bus) { return iface_->sd_bus_open_server(bus, fd); })
+{
+}
+
+Connection::Connection(std::unique_ptr<ISdBus>&& interface, sdbus_bus_t, sd_bus *bus)
+        : Connection(std::move(interface), [&](sd_bus** b) { *b = bus; return 0; })
 {
 }
 
@@ -262,7 +282,7 @@ MethodCall Connection::createMethodCall( const std::string& destination
 
     auto r = iface_->sd_bus_message_new_method_call( bus_.get()
                                                    , &sdbusMsg
-                                                   , destination.c_str()
+                                                   , destination.empty() ? nullptr : destination.c_str()
                                                    , objectPath.c_str()
                                                    , interfaceName.c_str()
                                                    , methodName.c_str() );
@@ -527,7 +547,8 @@ std::string Connection::composeSignalMatchFilter( const std::string &sender
     std::string filter;
 
     filter += "type='signal',";
-    filter += "sender='" + sender + "',";
+    if (!sender.empty())
+        filter += "sender='" + sender + "',";
     filter += "interface='" + interfaceName + "',";
     filter += "member='" + signalName + "',";
     filter += "path='" + objectPath + "'";
@@ -661,7 +682,6 @@ std::unique_ptr<sdbus::IConnection> createSessionBusConnection(const std::string
 std::unique_ptr<sdbus::IConnection> createSessionBusConnectionWithAddress(const std::string &address)
 {
     auto interface = std::make_unique<sdbus::internal::SdBus>();
-    assert(interface != nullptr);
     return std::make_unique<sdbus::internal::Connection>(std::move(interface), Connection::custom_session_bus, address);
 }
 
@@ -669,6 +689,32 @@ std::unique_ptr<sdbus::IConnection> createRemoteSystemBusConnection(const std::s
 {
     auto interface = std::make_unique<sdbus::internal::SdBus>();
     return std::make_unique<sdbus::internal::Connection>(std::move(interface), Connection::remote_system_bus, host);
+}
+
+std::unique_ptr<sdbus::IConnection> createDirectBusConnection(const std::string& address)
+{
+    auto interface = std::make_unique<sdbus::internal::SdBus>();
+    return std::make_unique<sdbus::internal::Connection>(std::move(interface), Connection::private_bus, address);
+}
+
+std::unique_ptr<sdbus::IConnection> createDirectBusConnection(int fd)
+{
+    auto interface = std::make_unique<sdbus::internal::SdBus>();
+    return std::make_unique<sdbus::internal::Connection>(std::move(interface), Connection::private_bus, fd);
+}
+
+std::unique_ptr<sdbus::IConnection> createServerBus(int fd)
+{
+    auto interface = std::make_unique<sdbus::internal::SdBus>();
+    return std::make_unique<sdbus::internal::Connection>(std::move(interface), Connection::server_bus, fd);
+}
+
+std::unique_ptr<sdbus::IConnection> createBusConnection(sd_bus *bus)
+{
+    SDBUS_THROW_ERROR_IF(bus == nullptr, "Invalid bus argument", EINVAL);
+
+    auto interface = std::make_unique<sdbus::internal::SdBus>();
+    return std::make_unique<sdbus::internal::Connection>(std::move(interface), Connection::sdbus_bus, bus);
 }
 
 } // namespace sdbus

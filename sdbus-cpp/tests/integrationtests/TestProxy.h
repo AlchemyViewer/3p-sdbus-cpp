@@ -32,6 +32,7 @@
 #include <thread>
 #include <chrono>
 #include <atomic>
+#include <future>
 
 namespace sdbus { namespace test {
 
@@ -73,6 +74,7 @@ class TestProxy final : public sdbus::ProxyInterfaces< org::sdbuscpp::integratio
 {
 public:
     TestProxy(std::string destination, std::string objectPath);
+    TestProxy(std::string destination, std::string objectPath, dont_run_event_loop_thread_t);
     TestProxy(sdbus::IConnection& connection, std::string destination, std::string objectPath);
     ~TestProxy();
 
@@ -93,6 +95,9 @@ public:
     void installDoOperationClientSideAsyncReplyHandler(std::function<void(uint32_t res, const sdbus::Error* err)> handler);
     uint32_t doOperationWithTimeout(const std::chrono::microseconds &timeout, uint32_t param);
     sdbus::PendingAsyncCall doOperationClientSideAsync(uint32_t param);
+    std::future<uint32_t> doOperationClientSideAsync(uint32_t param, with_future_t);
+    std::future<MethodReply> doOperationClientSideAsyncOnBasicAPILevel(uint32_t param);
+    std::future<void> doErroneousOperationClientSideAsync(with_future_t);
     void doErroneousOperationClientSideAsync();
     void doOperationClientSideAsyncWithTimeout(const std::chrono::microseconds &timeout, uint32_t param);
     int32_t callNonexistentMethod();
@@ -115,6 +120,29 @@ public: // for tests
 
     const Message* m_signalMsg{};
     std::string m_signalMemberName;
+};
+
+class DummyTestProxy final : public sdbus::ProxyInterfaces< org::sdbuscpp::integrationtests_proxy
+                                                          , sdbus::Peer_proxy
+                                                          , sdbus::Introspectable_proxy
+                                                          , sdbus::Properties_proxy >
+{
+public:
+    DummyTestProxy(std::string destination, std::string objectPath)
+        : ProxyInterfaces(destination, objectPath)
+    {
+    }
+
+protected:
+    void onSimpleSignal() override {}
+    void onSignalWithMap(const std::map<int32_t, std::string>&) override {}
+    void onSignalWithVariant(const sdbus::Variant&) override {}
+
+    void onSignalWithoutRegistration(const sdbus::Struct<std::string, sdbus::Struct<sdbus::Signature>>&) {}
+    void onDoOperationReply(uint32_t, const sdbus::Error*) {}
+
+    // Signals of standard D-Bus interfaces
+    void onPropertiesChanged( const std::string&, const std::map<std::string, sdbus::Variant>&, const std::vector<std::string>& ) override {}
 };
 
 }}

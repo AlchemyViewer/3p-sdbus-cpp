@@ -32,7 +32,7 @@
 #include "sdbus-c++/IConnection.h"
 #include "sdbus-c++/Error.h"
 #include "ScopeGuard.h"
-#include <systemd/sd-bus.h>
+#include SDBUS_HEADER
 #include <cassert>
 #include <chrono>
 #include <utility>
@@ -64,6 +64,21 @@ Proxy::Proxy( std::unique_ptr<sdbus::internal::IConnection>&& connection
     // The connection is ours only, i.e. it's us who has to manage the event loop upon this connection,
     // in order that we get and process signals, async call replies, and other messages from D-Bus.
     connection_->enterEventLoopAsync();
+}
+
+Proxy::Proxy( std::unique_ptr<sdbus::internal::IConnection>&& connection
+            , std::string destination
+            , std::string objectPath
+            , dont_run_event_loop_thread_t )
+    : connection_(std::move(connection))
+    , destination_(std::move(destination))
+    , objectPath_(std::move(objectPath))
+{
+    SDBUS_CHECK_SERVICE_NAME(destination_);
+    SDBUS_CHECK_OBJECT_PATH(objectPath_);
+
+    // Even though the connection is ours only, we don't start an event loop thread.
+    // This proxy is meant to be created, used for simple synchronous D-Bus call(s) and then dismissed.
 }
 
 MethodCall Proxy::createMethodCall(const std::string& interfaceName, const std::string& methodName)
@@ -105,15 +120,37 @@ PendingAsyncCall Proxy::callMethod(const MethodCall& message, async_reply_handle
     SDBUS_THROW_ERROR_IF(!message.isValid(), "Invalid async method call message provided", EINVAL);
 
     auto callback = (void*)&Proxy::sdbus_async_reply_handler;
-    auto callData = std::make_shared<AsyncCalls::CallData>(AsyncCalls::CallData{*this, std::move(asyncReplyCallback), {}});
+    auto callData = std::make_shared<AsyncCalls::CallData>(AsyncCalls::CallData{*this, std::move(asyncReplyCallback), {}, AsyncCalls::CallData::State::RUNNING});
     auto weakData = std::weak_ptr<AsyncCalls::CallData>{callData};
 
     callData->slot = message.send(callback, callData.get(), timeout);
 
-    auto slotPtr = callData->slot.get();
-    pendingAsyncCalls_.addCall(slotPtr, std::move(callData));
+    pendingAsyncCalls_.addCall(std::move(callData));
 
     return {weakData};
+}
+
+std::future<MethodReply> Proxy::callMethod(const MethodCall& message, with_future_t)
+{
+    return Proxy::callMethod(message, {}, with_future);
+}
+
+std::future<MethodReply> Proxy::callMethod(const MethodCall& message, uint64_t timeout, with_future_t)
+{
+    auto promise = std::make_shared<std::promise<MethodReply>>();
+    auto future = promise->get_future();
+
+    async_reply_handler asyncReplyCallback = [promise = std::move(promise)](MethodReply& reply, const Error* error) noexcept
+    {
+        if (error == nullptr)
+            promise->set_value(reply); // TODO: std::move? Can't move now because currently processed message. TODO: Refactor
+        else
+            promise->set_exception(std::make_exception_ptr(*error));
+    };
+
+    (void)Proxy::callMethod(message, std::move(asyncReplyCallback), timeout);
+
+    return future;
 }
 
 MethodReply Proxy::sendMethodCallMessageAndWaitForReply(const MethodCall& message, uint64_t timeout)
@@ -125,7 +162,7 @@ MethodReply Proxy::sendMethodCallMessageAndWaitForReply(const MethodCall& messag
         syncCallReplyData.sendMethodReplyToWaitingThread(reply, error);
     };
     auto callback = (void*)&Proxy::sdbus_async_reply_handler;
-    AsyncCalls::CallData callData{*this, std::move(asyncReplyCallback), {}};
+    AsyncCalls::CallData callData{*this, std::move(asyncReplyCallback), {}, AsyncCalls::CallData::State::NOT_ASYNC};
 
     message.send(callback, &callData, timeout, floating_slot);
 
@@ -238,16 +275,16 @@ int Proxy::sdbus_async_reply_handler(sd_bus_message *sdbusMessage, void *userDat
     assert(asyncCallData != nullptr);
     assert(asyncCallData->callback);
     auto& proxy = asyncCallData->proxy;
-    auto slot = asyncCallData->slot.get();
+    auto state = asyncCallData->state;
 
     // We are removing the CallData item at the complete scope exit, after the callback has been invoked.
     // We can't do it earlier (before callback invocation for example), because CallBack data (slot release)
     // is the synchronization point between callback invocation and Proxy::unregister.
     SCOPE_EXIT
     {
-        // Remove call meta-data if it's a real async call (a sync call done in terms of async has slot == nullptr)
-        if (slot)
-            proxy.pendingAsyncCalls_.removeCall(slot);
+        // Remove call meta-data if it's a real async call (a sync call done in terms of async has STATE_NOT_ASYNC)
+        if (state != AsyncCalls::CallData::State::NOT_ASYNC)
+            proxy.pendingAsyncCalls_.removeCall(asyncCallData);
     };
 
     auto message = Message::Factory::create<MethodReply>(sdbusMessage, &proxy.connection_->getSdBusInterface());
@@ -319,7 +356,7 @@ void PendingAsyncCall::cancel()
     if (auto ptr = callData_.lock(); ptr != nullptr)
     {
         auto* callData = static_cast<internal::Proxy::AsyncCalls::CallData*>(ptr.get());
-        callData->proxy.pendingAsyncCalls_.removeCall(callData->slot.get());
+        callData->proxy.pendingAsyncCalls_.removeCall(callData);
 
         // At this point, the callData item is being deleted, leading to the release of the
         // sd-bus slot pointer. This release locks the global sd-bus mutex. If the async
@@ -363,6 +400,22 @@ std::unique_ptr<sdbus::IProxy> createProxy( std::unique_ptr<IConnection>&& conne
                                                    , std::move(objectPath) );
 }
 
+std::unique_ptr<sdbus::IProxy> createProxy( std::unique_ptr<IConnection>&& connection
+                                          , std::string destination
+                                          , std::string objectPath
+                                          , dont_run_event_loop_thread_t )
+{
+    auto* sdbusConnection = dynamic_cast<sdbus::internal::IConnection*>(connection.get());
+    SDBUS_THROW_ERROR_IF(!sdbusConnection, "Connection is not a real sdbus-c++ connection", EINVAL);
+
+    connection.release();
+
+    return std::make_unique<sdbus::internal::Proxy>( std::unique_ptr<sdbus::internal::IConnection>(sdbusConnection)
+                                                   , std::move(destination)
+                                                   , std::move(objectPath)
+                                                   , dont_run_event_loop_thread );
+}
+
 std::unique_ptr<sdbus::IProxy> createProxy( std::string destination
                                           , std::string objectPath )
 {
@@ -374,6 +427,21 @@ std::unique_ptr<sdbus::IProxy> createProxy( std::string destination
     return std::make_unique<sdbus::internal::Proxy>( std::move(sdbusConnection)
                                                    , std::move(destination)
                                                    , std::move(objectPath) );
+}
+
+std::unique_ptr<sdbus::IProxy> createProxy( std::string destination
+                                          , std::string objectPath
+                                          , dont_run_event_loop_thread_t )
+{
+    auto connection = sdbus::createConnection();
+
+    auto sdbusConnection = std::unique_ptr<sdbus::internal::IConnection>(dynamic_cast<sdbus::internal::IConnection*>(connection.release()));
+    assert(sdbusConnection != nullptr);
+
+    return std::make_unique<sdbus::internal::Proxy>( std::move(sdbusConnection)
+                                                   , std::move(destination)
+                                                   , std::move(objectPath)
+                                                   , dont_run_event_loop_thread );
 }
 
 }
