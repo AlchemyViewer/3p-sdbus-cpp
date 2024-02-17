@@ -30,7 +30,7 @@
 #include <atomic>
 
 namespace sdbus { namespace test {
-    
+
 TestAdaptor::TestAdaptor(sdbus::IConnection& connection, const std::string& path) :
     AdaptorInterfaces(connection, path)
 {
@@ -77,7 +77,7 @@ std::vector<int16_t> TestAdaptor::getInts16FromStruct(const sdbus::Struct<uint8_
 
 sdbus::Variant TestAdaptor::processVariant(const sdbus::Variant& v)
 {
-    sdbus::Variant res = static_cast<int32_t>(v.get<double>());
+    sdbus::Variant res{static_cast<int32_t>(v.get<double>())};
     return res;
 }
 
@@ -93,7 +93,7 @@ std::map<int32_t, sdbus::Variant> TestAdaptor::getMapOfVariants(const std::vecto
 
 sdbus::Struct<std::string, sdbus::Struct<std::map<int32_t, int32_t>>> TestAdaptor::getStructInStruct()
 {
-    return sdbus::make_struct(STRING_VALUE, sdbus::make_struct(std::map<int32_t, int32_t>{{INT32_VALUE, INT32_VALUE}}));
+    return sdbus::Struct{STRING_VALUE, sdbus::Struct{std::map<int32_t, int32_t>{{INT32_VALUE, INT32_VALUE}}}};
 }
 
 int32_t TestAdaptor::sumStructItems(const sdbus::Struct<uint8_t, uint16_t>& a, const sdbus::Struct<int32_t, int64_t>& b)
@@ -104,7 +104,7 @@ int32_t TestAdaptor::sumStructItems(const sdbus::Struct<uint8_t, uint16_t>& a, c
     return res;
 }
 
-uint32_t TestAdaptor::sumVectorItems(const std::vector<uint16_t>& a, const std::vector<uint64_t>& b)
+uint32_t TestAdaptor::sumArrayItems(const std::vector<uint16_t>& a, const std::array<uint64_t, 3>& b)
 {
     uint32_t res{0};
     for (auto x : a)
@@ -162,9 +162,9 @@ sdbus::UnixFd TestAdaptor::getUnixFd()
     return sdbus::UnixFd{UNIX_FD_VALUE};
 }
 
-std::map<uint64_t, sdbus::Struct<std::map<uint8_t, std::vector<sdbus::Struct<sdbus::ObjectPath, bool, sdbus::Variant, std::map<int32_t, std::string>>>>, sdbus::Signature, std::string>> TestAdaptor::getComplex()
+std::unordered_map<uint64_t, sdbus::Struct<std::map<uint8_t, std::vector<sdbus::Struct<sdbus::ObjectPath, bool, sdbus::Variant, std::map<int32_t, std::string>>>>, sdbus::Signature, std::string>> TestAdaptor::getComplex()
 {
-    return { // map
+    return { // unordered_map
         {
             0,  // uint_64_t
             {   // struct
@@ -390,7 +390,7 @@ R"delimiter(
 <arg type="(ix)" direction="in"/>
 <arg type="i" direction="out"/>
 </method>
-<method name="sumVectorItems">
+<method name="sumArrayItems">
 <arg type="aq" direction="in"/>
 <arg type="at" direction="in"/>
 <arg type="u" direction="out"/>

@@ -28,10 +28,12 @@
 #define SDBUS_CXX_IPROXY_H_
 
 #include <sdbus-c++/ConvenienceApiClasses.h>
+#include <sdbus-c++/TypeTraits.h>
 #include <string>
 #include <memory>
 #include <functional>
 #include <chrono>
+#include <future>
 
 // Forward declarations
 namespace sdbus {
@@ -81,7 +83,7 @@ namespace sdbus {
         virtual MethodCall createMethodCall(const std::string& interfaceName, const std::string& methodName) = 0;
 
         /*!
-         * @brief Calls method on the proxied D-Bus object
+         * @brief Calls method on the D-Bus object
          *
          * @param[in] message Message representing a method call
          * @param[in] timeout Timeout for dbus call in microseconds
@@ -107,7 +109,7 @@ namespace sdbus {
         MethodReply callMethod(const MethodCall& message, const std::chrono::duration<_Rep, _Period>& timeout);
 
         /*!
-         * @brief Calls method on the proxied D-Bus object asynchronously
+         * @brief Calls method on the D-Bus object asynchronously
          *
          * @param[in] message Message representing an async method call
          * @param[in] asyncReplyCallback Handler for the async reply
@@ -131,7 +133,7 @@ namespace sdbus {
         PendingAsyncCall callMethod(const MethodCall& message, async_reply_handler asyncReplyCallback, const std::chrono::duration<_Rep, _Period>& timeout);
 
         /*!
-         * @brief Registers a handler for the desired signal emitted by the proxied D-Bus object
+         * @brief Registers a handler for the desired signal emitted by the D-Bus object
          *
          * @param[in] interfaceName Name of an interface that the signal belongs to
          * @param[in] signalName Name of the signal
@@ -176,7 +178,7 @@ namespace sdbus {
         virtual void unregister() = 0;
 
         /*!
-         * @brief Calls method on the proxied D-Bus object
+         * @brief Calls method on the D-Bus object
          *
          * @param[in] methodName Name of the method
          * @return A helper object for convenient invocation of the method
@@ -197,7 +199,7 @@ namespace sdbus {
         [[nodiscard]] MethodInvoker callMethod(const std::string& methodName);
 
         /*!
-         * @brief Calls method on the proxied D-Bus object asynchronously
+         * @brief Calls method on the D-Bus object asynchronously
          *
          * @param[in] methodName Name of the method
          * @return A helper object for convenient asynchronous invocation of the method
@@ -221,7 +223,7 @@ namespace sdbus {
         [[nodiscard]] AsyncMethodInvoker callMethodAsync(const std::string& methodName);
 
         /*!
-         * @brief Registers signal handler for a given signal of the proxied D-Bus object
+         * @brief Registers signal handler for a given signal of the D-Bus object
          *
          * @param[in] signalName Name of the signal
          * @return A helper object for convenient registration of the signal handler
@@ -241,7 +243,7 @@ namespace sdbus {
         [[nodiscard]] SignalSubscriber uponSignal(const std::string& signalName);
 
         /*!
-         * @brief Unregisters signal handler of a given signal of the proxied D-Bus object
+         * @brief Unregisters signal handler of a given signal of the D-Bus object
          *
          * @param[in] signalName Name of the signal
          * @return A helper object for convenient unregistration of the signal handler
@@ -258,7 +260,7 @@ namespace sdbus {
         [[nodiscard]] SignalUnsubscriber muteSignal(const std::string& signalName);
 
         /*!
-         * @brief Gets value of a property of the proxied D-Bus object
+         * @brief Gets value of a property of the D-Bus object
          *
          * @param[in] propertyName Name of the property
          * @return A helper object for convenient getting of property value
@@ -277,10 +279,52 @@ namespace sdbus {
         [[nodiscard]] PropertyGetter getProperty(const std::string& propertyName);
 
         /*!
-         * @brief Sets value of a property of the proxied D-Bus object
+         * @brief Gets value of a property of the D-Bus object asynchronously
+         *
+         * @param[in] propertyName Name of the property
+         * @return A helper object for convenient asynchronous getting of property value
+         *
+         * This is a high-level, convenience way of reading D-Bus property values that abstracts
+         * from the D-Bus message concept.
+         *
+         * Example of use:
+         * @code
+         * std::future<sdbus::Variant> state = object.getPropertyAsync("state").onInterface("com.kistler.foo").getResultAsFuture();
+         * auto callback = [](const sdbus::Error* err, const sdbus::Variant& value){ ... };
+         * object.getPropertyAsync("state").onInterface("com.kistler.foo").uponReplyInvoke(std::move(callback));
+         * @endcode
+         *
+         * @throws sdbus::Error in case of failure
+         */
+        [[nodiscard]] AsyncPropertyGetter getPropertyAsync(const std::string& propertyName);
+
+        /*!
+         * @brief Sets value of a property of the D-Bus object
          *
          * @param[in] propertyName Name of the property
          * @return A helper object for convenient setting of property value
+         *
+         * This is a high-level, convenience way of writing D-Bus property values that abstracts
+         * from the D-Bus message concept.
+         * Setting property value with NoReply flag is also supported.
+         *
+         * Example of use:
+         * @code
+         * int state = ...;
+         * object_.setProperty("state").onInterface("com.kistler.foo").toValue(state);
+         * // Or we can just send the set message call without waiting for the reply
+         * object_.setProperty("state").onInterface("com.kistler.foo").toValue(state, dont_expect_reply);
+         * @endcode
+         *
+         * @throws sdbus::Error in case of failure
+         */
+        [[nodiscard]] PropertySetter setProperty(const std::string& propertyName);
+
+        /*!
+         * @brief Sets value of a property of the D-Bus object asynchronously
+         *
+         * @param[in] propertyName Name of the property
+         * @return A helper object for convenient asynchronous setting of property value
          *
          * This is a high-level, convenience way of writing D-Bus property values that abstracts
          * from the D-Bus message concept.
@@ -288,12 +332,48 @@ namespace sdbus {
          * Example of use:
          * @code
          * int state = ...;
-         * object_.setProperty("state").onInterface("com.kistler.foo").toValue(state);
+         * // We can wait until the set operation finishes by waiting on the future
+         * std::future<void> res = object_.setPropertyAsync("state").onInterface("com.kistler.foo").toValue(state).getResultAsFuture();
          * @endcode
          *
          * @throws sdbus::Error in case of failure
          */
-        [[nodiscard]] PropertySetter setProperty(const std::string& propertyName);
+        [[nodiscard]] AsyncPropertySetter setPropertyAsync(const std::string& propertyName);
+
+        /*!
+         * @brief Gets values of all properties of the D-Bus object
+         *
+         * @return A helper object for convenient getting of properties' values
+         *
+         * This is a high-level, convenience way of reading D-Bus properties' values that abstracts
+         * from the D-Bus message concept.
+         *
+         * Example of use:
+         * @code
+         * auto props = object.getAllProperties().onInterface("com.kistler.foo");
+         * @endcode
+         *
+         * @throws sdbus::Error in case of failure
+         */
+        [[nodiscard]] AllPropertiesGetter getAllProperties();
+
+        /*!
+         * @brief Gets values of all properties of the D-Bus object asynchronously
+         *
+         * @return A helper object for convenient asynchronous getting of properties' values
+         *
+         * This is a high-level, convenience way of reading D-Bus properties' values that abstracts
+         * from the D-Bus message concept.
+         *
+         * Example of use:
+         * @code
+         * auto callback = [](const sdbus::Error* err, const std::map<std::string, Variant>>& properties){ ... };
+         * auto props = object.getAllPropertiesAsync().onInterface("com.kistler.foo").uponReplyInvoke(std::move(callback));
+         * @endcode
+         *
+         * @throws sdbus::Error in case of failure
+         */
+        [[nodiscard]] AsyncAllPropertiesGetter getAllPropertiesAsync();
 
         /*!
          * @brief Provides D-Bus connection used by the proxy
@@ -322,6 +402,33 @@ namespace sdbus {
          * @return A pointer to the currently processed D-Bus message
          */
         virtual const Message* getCurrentlyProcessedMessage() const = 0;
+
+        /*!
+         * @brief Calls method on the D-Bus object asynchronously
+         *
+         * @param[in] message Message representing an async method call
+         * @param[in] asyncReplyCallback Handler for the async reply
+         * @param[in] timeout Timeout for dbus call in microseconds
+         * @return Cookie for the the pending asynchronous call
+         *
+         * The call is non-blocking. It doesn't wait for the reply. Once the reply arrives,
+         * the provided async reply handler will get invoked from the context of the connection
+         * I/O event loop thread.
+         *
+         * Note: To avoid messing with messages, use higher-level API defined below.
+         *
+         * @throws sdbus::Error in case of failure
+         */
+        virtual std::future<MethodReply> callMethod(const MethodCall& message, with_future_t) = 0;
+        virtual std::future<MethodReply> callMethod(const MethodCall& message, uint64_t timeout, with_future_t) = 0;
+
+        /*!
+         * @copydoc IProxy::callMethod(const MethodCall&,uint64_t,with_future_t)
+         */
+        template <typename _Rep, typename _Period>
+        std::future<MethodReply> callMethod( const MethodCall& message
+                                           , const std::chrono::duration<_Rep, _Period>& timeout
+                                           , with_future_t );
     };
 
     /********************************************//**
@@ -382,6 +489,15 @@ namespace sdbus {
         return callMethod(message, std::move(asyncReplyCallback), microsecs.count());
     }
 
+    template <typename _Rep, typename _Period>
+    inline std::future<MethodReply> IProxy::callMethod( const MethodCall& message
+                                                      , const std::chrono::duration<_Rep, _Period>& timeout
+                                                      , with_future_t )
+    {
+        auto microsecs = std::chrono::duration_cast<std::chrono::microseconds>(timeout);
+        return callMethod(message, microsecs.count(), with_future);
+    }
+
     inline MethodInvoker IProxy::callMethod(const std::string& methodName)
     {
         return MethodInvoker(*this, methodName);
@@ -407,9 +523,29 @@ namespace sdbus {
         return PropertyGetter(*this, propertyName);
     }
 
+    inline AsyncPropertyGetter IProxy::getPropertyAsync(const std::string& propertyName)
+    {
+        return AsyncPropertyGetter(*this, propertyName);
+    }
+
     inline PropertySetter IProxy::setProperty(const std::string& propertyName)
     {
         return PropertySetter(*this, propertyName);
+    }
+
+    inline AsyncPropertySetter IProxy::setPropertyAsync(const std::string& propertyName)
+    {
+        return AsyncPropertySetter(*this, propertyName);
+    }
+
+    inline AllPropertiesGetter IProxy::getAllProperties()
+    {
+        return AllPropertiesGetter(*this);
+    }
+
+    inline AsyncAllPropertiesGetter IProxy::getAllPropertiesAsync()
+    {
+        return AsyncAllPropertiesGetter(*this);
     }
 
     /*!
@@ -425,6 +561,9 @@ namespace sdbus {
      * remains the owner of the connection (the proxy just keeps a reference to it), and
      * should make sure that an I/O event loop is running on that connection, so the proxy
      * may receive incoming signals and asynchronous method replies.
+     *
+     * The destination parameter may be an empty string (useful e.g. in case of direct
+     * D-Bus connections to a custom server bus).
      *
      * Code example:
      * @code
@@ -449,6 +588,9 @@ namespace sdbus {
      * upon that connection in a separate internal thread. Handlers for incoming signals and
      * asynchronous method replies will be executed in the context of that thread.
      *
+     * The destination parameter may be an empty string (useful e.g. in case of direct
+     * D-Bus connections to a custom server bus).
+     *
      * Code example:
      * @code
      * auto proxy = sdbus::createProxy(std::move(connection), "com.kistler.foo", "/com/kistler/foo");
@@ -461,12 +603,40 @@ namespace sdbus {
     /*!
      * @brief Creates a proxy object for a specific remote D-Bus object
      *
+     * @param[in] connection D-Bus connection to be used by the proxy object
+     * @param[in] destination Bus name that provides the remote D-Bus object
+     * @param[in] objectPath Path of the remote D-Bus object
+     * @return Pointer to the object proxy instance
+     *
+     * The provided connection will be used by the proxy to issue calls against the object.
+     * The Object proxy becomes an exclusive owner of this connection, but will not start
+     * an event loop thread on this connection. This is cheap construction and is suitable
+     * for short-lived proxies created just to execute simple synchronous D-Bus calls and
+     * then destroyed. Such blocking request-reply calls will work without an event loop
+     * (but signals, async calls, etc. won't).
+     *
+     * The destination parameter may be an empty string (useful e.g. in case of direct
+     * D-Bus connections to a custom server bus).
+     *
+     * Code example:
+     * @code
+     * auto proxy = sdbus::createProxy(std::move(connection), "com.kistler.foo", "/com/kistler/foo", sdbus::dont_run_event_loop_thread);
+     * @endcode
+     */
+    [[nodiscard]] std::unique_ptr<sdbus::IProxy> createProxy( std::unique_ptr<sdbus::IConnection>&& connection
+                                                            , std::string destination
+                                                            , std::string objectPath
+                                                            , dont_run_event_loop_thread_t );
+
+    /*!
+     * @brief Creates a proxy object for a specific remote D-Bus object
+     *
      * @param[in] destination Bus name that provides the remote D-Bus object
      * @param[in] objectPath Path of the remote D-Bus object
      * @return Pointer to the object proxy instance
      *
      * No D-Bus connection is provided here, so the object proxy will create and manage
-     * his own connection, and will automatically start a procesing loop upon that connection
+     * his own connection, and will automatically start an event loop upon that connection
      * in a separate internal thread. Handlers for incoming signals and asynchronous
      * method replies will be executed in the context of that thread.
      *
@@ -477,6 +647,28 @@ namespace sdbus {
      */
     [[nodiscard]] std::unique_ptr<sdbus::IProxy> createProxy( std::string destination
                                                             , std::string objectPath );
+
+    /*!
+     * @brief Creates a proxy object for a specific remote D-Bus object
+     *
+     * @param[in] destination Bus name that provides the remote D-Bus object
+     * @param[in] objectPath Path of the remote D-Bus object
+     * @return Pointer to the object proxy instance
+     *
+     * No D-Bus connection is provided here, so the object proxy will create and manage
+     * his own connection, but it will not start an event loop thread. This is cheap
+     * construction and is suitable for short-lived proxies created just to execute simple
+     * synchronous D-Bus calls and then destroyed. Such blocking request-reply calls
+     * will work without an event loop (but signals, async calls, etc. won't).
+     *
+     * Code example:
+     * @code
+     * auto proxy = sdbus::createProxy("com.kistler.foo", "/com/kistler/foo", sdbus::dont_run_event_loop_thread );
+     * @endcode
+     */
+    [[nodiscard]] std::unique_ptr<sdbus::IProxy> createProxy( std::string destination
+                                                            , std::string objectPath
+                                                            , dont_run_event_loop_thread_t );
 
 }
 

@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.13)
 
-project(sdbus-c++ VERSION 1.2.0 LANGUAGES C CXX)
+project(sdbus-c++ VERSION 1.4.0 LANGUAGES C CXX)
 
 include(GNUInstallDirs) # Installation directories for `install` command and pkgconfig file
 
@@ -12,11 +12,28 @@ include(GNUInstallDirs) # Installation directories for `install` command and pkg
 # PERFORMING CHECKS & PREPARING THE DEPENDENCIES
 #-------------------------------
 
+set(LIBSYSTEMD "systemd")
+
 option(BUILD_LIBSYSTEMD "Build libsystemd static library and incorporate it into libsdbus-c++" OFF)
 
 if(NOT BUILD_LIBSYSTEMD)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(Systemd IMPORTED_TARGET GLOBAL libsystemd>=236)
+    if(NOT TARGET PkgConfig::Systemd)
+        message(WARNING "libsystemd not found, checking for libelogind instead")
+        pkg_check_modules(Systemd IMPORTED_TARGET GLOBAL libelogind>=236)
+        if(TARGET PkgConfig::Systemd)
+            set(LIBSYSTEMD "elogind")
+            string(REPLACE "." ";" VERSION_LIST ${Systemd_VERSION})
+            list(GET VERSION_LIST 0 Systemd_VERSION)
+	else()
+            message(WARNING "libelogind not found, checking for basu instead")
+            pkg_check_modules(Systemd IMPORTED_TARGET GLOBAL basu)
+            set(LIBSYSTEMD "basu")
+            # https://git.sr.ht/~emersion/basu/commit/d4d185d29a26
+            set(Systemd_VERSION "240")
+        endif()
+    endif()
     if(NOT TARGET PkgConfig::Systemd)
         message(FATAL_ERROR "libsystemd of version at least 236 is required, but was not found "
                             "(if you have systemd in your OS, you may want to install package containing pkgconfig "
@@ -98,18 +115,22 @@ set(CMAKE_CXX_STANDARD 17)
 set(SDBUSCPP_VERSION_MAJOR "${PROJECT_VERSION_MAJOR}")
 set(SDBUSCPP_VERSION "${PROJECT_VERSION}")
 
-# We promote BUILD_SHARED_LIBS flags to (global) option only if we are the main project
+# We promote the BUILD_SHARED_LIBS flag to a (global) option only if we are the main project
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     option(BUILD_SHARED_LIBS "Build shared libraries (.so) instead of static ones (.a)" ON)
 endif()
 
 # Having an object target allows unit tests to reuse already built sources without re-building
 add_library(sdbus-c++-objlib OBJECT ${SDBUSCPP_SRCS})
-target_compile_definitions(sdbus-c++-objlib PRIVATE BUILD_LIB=1 LIBSYSTEMD_VERSION=${LIBSYSTEMD_VERSION})
+target_compile_definitions(sdbus-c++-objlib PRIVATE
+    BUILD_LIB=1
+    LIBSYSTEMD_VERSION=${LIBSYSTEMD_VERSION}
+    SDBUS_${LIBSYSTEMD}
+    SDBUS_HEADER=<${LIBSYSTEMD}/sd-bus.h>)
 target_include_directories(sdbus-c++-objlib PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                                                    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
-if(DEFINED BUILD_SHARED_LIBS)
-    set_target_properties(sdbus-c++-objlib PROPERTIES POSITION_INDEPENDENT_CODE ${BUILD_SHARED_LIBS})
+if(BUILD_SHARED_LIBS)
+    set_target_properties(sdbus-c++-objlib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 if(BUILD_LIBSYSTEMD)
     add_dependencies(sdbus-c++-objlib LibsystemdBuildProject)
@@ -140,7 +161,7 @@ endif()
 install(TARGETS ${EXPORT_SET}
         EXPORT sdbus-c++-targets
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT runtime
-        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT runtime
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT runtime NAMELINK_COMPONENT dev
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT dev
         PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${SDBUSCPP_INCLUDE_SUBDIR} COMPONENT dev)
 
@@ -210,6 +231,11 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/cmake/sdbus-c++-config.cmake
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/sdbus-c++
         COMPONENT dev)
 
+if(BUILD_SHARED_LIBS AND (BUILD_LIBSYSTEMD OR Systemd_LINK_LIBRARIES MATCHES "/libsystemd\.a(;|$)"))
+    set(PKGCONFIG_REQS ".private")
+else()
+    set(PKGCONFIG_REQS "")
+endif()
 configure_file(pkgconfig/sdbus-c++.pc.in pkgconfig/sdbus-c++.pc @ONLY)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/pkgconfig/sdbus-c++.pc
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig COMPONENT dev)

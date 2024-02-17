@@ -103,7 +103,9 @@ TEST_F(SdbusTestObject, CallsMethodWithStructVariantsAndGetMapSuccesfully)
     std::vector<int32_t> x{-2, 0, 2};
     sdbus::Struct<sdbus::Variant, sdbus::Variant> y{false, true};
     auto mapOfVariants = m_proxy->getMapOfVariants(x, y);
-    decltype(mapOfVariants) res{{-2, false}, {0, false}, {2, true}};
+    decltype(mapOfVariants) res{ {sdbus::Variant{-2}, sdbus::Variant{false}}
+                               , {sdbus::Variant{0}, sdbus::Variant{false}}
+                               , {sdbus::Variant{2}, sdbus::Variant{true}}};
 
     ASSERT_THAT(mapOfVariants[-2].get<bool>(), Eq(res[-2].get<bool>()));
     ASSERT_THAT(mapOfVariants[0].get<bool>(), Eq(res[0].get<bool>()));
@@ -125,8 +127,8 @@ TEST_F(SdbusTestObject, CallsMethodWithTwoStructsSuccesfully)
 
 TEST_F(SdbusTestObject, CallsMethodWithTwoVectorsSuccesfully)
 {
-    auto val = m_proxy->sumVectorItems({1, 7}, {2, 3});
-    ASSERT_THAT(val, Eq(1 + 7 + 2 + 3));
+    auto val = m_proxy->sumArrayItems({1, 7}, {2, 3, 4});
+    ASSERT_THAT(val, Eq(1 + 7 + 2 + 3 + 4));
 }
 
 TEST_F(SdbusTestObject, CallsMethodWithSignatureSuccesfully)
@@ -178,7 +180,7 @@ TEST_F(SdbusTestObject, ThrowsTimeoutErrorWhenMethodTimesOut)
     catch (const sdbus::Error& e)
     {
         ASSERT_THAT(e.getName(), AnyOf("org.freedesktop.DBus.Error.Timeout", "org.freedesktop.DBus.Error.NoReply"));
-        ASSERT_THAT(e.getMessage(), AnyOf("Connection timed out", "Method call timed out"));
+        ASSERT_THAT(e.getMessage(), AnyOf("Connection timed out", "Operation timed out", "Method call timed out"));
         auto measuredTimeout = std::chrono::steady_clock::now() - start;
         ASSERT_THAT(measuredTimeout, Le(50ms));
     }
@@ -272,3 +274,16 @@ TEST_F(SdbusTestObject, CannotSetGeneralMethodTimeoutWithLibsystemdVersionLessTh
     ASSERT_THROW(s_adaptorConnection->getMethodCallTimeout(), sdbus::Error);
 }
 #endif
+
+TEST_F(SdbusTestObject, CanCallMethodSynchronouslyWithoutAnEventLoopThread)
+{
+#if defined(__clang__) && defined(__FreeBSD__)
+    GTEST_SKIP() << "https://github.com/Kistler-Group/sdbus-cpp/issues/359";
+#endif
+
+    auto proxy = std::make_unique<TestProxy>(BUS_NAME, OBJECT_PATH, sdbus::dont_run_event_loop_thread);
+
+    auto multiplyRes = proxy->multiply(INT64_VALUE, DOUBLE_VALUE);
+
+    ASSERT_THAT(multiplyRes, Eq(INT64_VALUE * DOUBLE_VALUE));
+}

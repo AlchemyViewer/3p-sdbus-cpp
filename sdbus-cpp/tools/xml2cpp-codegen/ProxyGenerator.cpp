@@ -84,7 +84,7 @@ std::string ProxyGenerator::processInterface(Node& interface) const
             << tab << "static constexpr const char* INTERFACE_NAME = \"" << ifaceName << "\";" << endl << endl
             << "protected:" << endl
             << tab << className << "(sdbus::IProxy& proxy)" << endl
-            << tab << tab << ": proxy_(proxy)" << endl;
+            << tab << tab << ": proxy_(&proxy)" << endl;
 
     Nodes methods = interface["method"];
     Nodes signals = interface["signal"];
@@ -97,17 +97,29 @@ std::string ProxyGenerator::processInterface(Node& interface) const
             << registration
             << tab << "}" << endl << endl;
 
+    // Rule of Five
+    body << tab << className << "(const " << className << "&) = delete;" << endl;
+    body << tab << className << "& operator=(const " << className << "&) = delete;" << endl;
+    body << tab << className << "(" << className << "&&) = default;" << endl;
+    body << tab << className << "& operator=(" << className << "&&) = default;" << endl << endl;
+
     body << tab << "~" << className << "() = default;" << endl << endl;
 
     if (!declaration.empty())
         body << declaration << endl;
 
-    std::string methodDefinitions, asyncDeclarations;
-    std::tie(methodDefinitions, asyncDeclarations) = processMethods(methods);
+    std::string methodDefinitions, asyncDeclarationsMethods;
+    std::tie(methodDefinitions, asyncDeclarationsMethods) = processMethods(methods);
+    std::string propertyDefinitions, asyncDeclarationsProperties;
+    std::tie(propertyDefinitions, asyncDeclarationsProperties) = processProperties(properties);
 
-    if (!asyncDeclarations.empty())
+    if (!asyncDeclarationsMethods.empty())
     {
-        body << asyncDeclarations << endl;
+        body << asyncDeclarationsMethods << endl;
+    }
+    if (!asyncDeclarationsProperties.empty())
+    {
+        body << asyncDeclarationsProperties << endl;
     }
 
     if (!methodDefinitions.empty())
@@ -115,14 +127,13 @@ std::string ProxyGenerator::processInterface(Node& interface) const
         body << "public:" << endl << methodDefinitions;
     }
 
-    std::string propertyDefinitions = processProperties(properties);
     if (!propertyDefinitions.empty())
     {
         body << "public:" << endl << propertyDefinitions;
     }
 
     body << "private:" << endl
-            << tab << "sdbus::IProxy& proxy_;" << endl
+            << tab << "sdbus::IProxy* proxy_;" << endl
             << "};" << endl << endl
             << std::string(namespacesCount, '}') << " // namespaces" << endl << endl;
 
@@ -145,19 +156,30 @@ std::tuple<std::string, std::string> ProxyGenerator::processMethods(const Nodes&
 
         bool dontExpectReply{false};
         bool async{false};
+        bool future{false}; // Async methods implemented by means of either std::future or callbacks
         std::string timeoutValue;
         std::smatch smTimeout;
 
         Nodes annotations = (*method)["annotation"];
         for (const auto& annotation : annotations)
         {
-            if (annotation->get("name") == "org.freedesktop.DBus.Method.NoReply" && annotation->get("value") == "true")
+            const auto annotationName = annotation->get("name");
+            const auto annotationValue = annotation->get("value");
+
+            if (annotationName == "org.freedesktop.DBus.Method.NoReply" && annotationValue == "true")
                 dontExpectReply = true;
-            else if (annotation->get("name") == "org.freedesktop.DBus.Method.Async"
-                     && (annotation->get("value") == "client" || annotation->get("value") == "clientserver"))
-                async = true;
-            if (annotation->get("name") == "org.freedesktop.DBus.Method.Timeout")
-                timeoutValue = annotation->get("value");
+            else
+            {
+                if (annotationName == "org.freedesktop.DBus.Method.Async"
+                     && (annotationValue == "client" || annotationValue == "clientserver" || annotationValue == "client-server"))
+                    async = true;
+                else if (annotationName == "org.freedesktop.DBus.Method.Async.ClientImpl" && annotationValue == "callback")
+                    future = false;
+                else if (annotationName == "org.freedesktop.DBus.Method.Async.ClientImpl" && (annotationValue == "future" || annotationValue == "std::future"))
+                    future = true;
+            }
+            if (annotationName == "org.freedesktop.DBus.Method.Timeout")
+                timeoutValue = annotationValue;
         }
         if (dontExpectReply && outArgs.size() > 0)
         {
@@ -180,12 +202,13 @@ std::tuple<std::string, std::string> ProxyGenerator::processMethods(const Nodes&
         }
 
         auto retType = outArgsToType(outArgs);
+        auto retTypeBare = outArgsToType(outArgs, true);
         std::string inArgStr, inArgTypeStr;
         std::tie(inArgStr, inArgTypeStr, std::ignore, std::ignore) = argsToNamesAndTypes(inArgs);
         std::string outArgStr, outArgTypeStr;
         std::tie(outArgStr, outArgTypeStr, std::ignore, std::ignore) = argsToNamesAndTypes(outArgs);
 
-        const std::string realRetType = (async && !dontExpectReply ? "sdbus::PendingAsyncCall" : async ? "void" : retType);
+        const std::string realRetType = (async && !dontExpectReply ? (future ? "std::future<" + retType + ">" : "sdbus::PendingAsyncCall") : async ? "void" : retType);
         definitionSS << tab << realRetType << " " << nameSafe << "(" << inArgTypeStr << ")" << endl
                 << tab << "{" << endl;
 
@@ -200,7 +223,7 @@ std::tuple<std::string, std::string> ProxyGenerator::processMethods(const Nodes&
         }
 
         definitionSS << tab << tab << (async && !dontExpectReply ? "return " : "")
-                     << "proxy_.callMethod" << (async ? "Async" : "") << "(\"" << name << "\").onInterface(INTERFACE_NAME)";
+                     << "proxy_->callMethod" << (async ? "Async" : "") << "(\"" << name << "\").onInterface(INTERFACE_NAME)";
 
         if (!timeoutValue.empty())
         {
@@ -219,11 +242,18 @@ std::tuple<std::string, std::string> ProxyGenerator::processMethods(const Nodes&
             auto nameBigFirst = name;
             nameBigFirst[0] = islower(nameBigFirst[0]) ? nameBigFirst[0] + 'A' - 'a' : nameBigFirst[0];
 
-            definitionSS << ".uponReplyInvoke([this](const sdbus::Error* error" << (outArgTypeStr.empty() ? "" : ", ") << outArgTypeStr << ")"
-                                             "{ this->on" << nameBigFirst << "Reply(" << outArgStr << (outArgStr.empty() ? "" : ", ") << "error); })";
+            if (future) // Async methods implemented through future
+            {
+                definitionSS << ".getResultAsFuture<" << retTypeBare << ">()";
+            }
+            else // Async methods implemented through callbacks
+            {
+                definitionSS << ".uponReplyInvoke([this](const sdbus::Error* error" << (outArgTypeStr.empty() ? "" : ", ") << outArgTypeStr << ")"
+                                                 "{ this->on" << nameBigFirst << "Reply(" << outArgStr << (outArgStr.empty() ? "" : ", ") << "error); })";
 
-            asyncDeclarationSS << tab << "virtual void on" << nameBigFirst << "Reply("
-                               << outArgTypeStr << (outArgTypeStr.empty() ? "" : ", ")  << "const sdbus::Error* error) = 0;" << endl;
+                asyncDeclarationSS << tab << "virtual void on" << nameBigFirst << "Reply("
+                                   << outArgTypeStr << (outArgTypeStr.empty() ? "" : ", ")  << "const sdbus::Error* error) = 0;" << endl;
+            }
         }
         else if (outArgs.size() > 0)
         {
@@ -257,7 +287,7 @@ std::tuple<std::string, std::string> ProxyGenerator::processSignals(const Nodes&
         std::tie(argStr, argTypeStr, std::ignore, std::ignore) = argsToNamesAndTypes(args);
 
         registrationSS << tab << tab << "proxy_"
-                ".uponSignal(\"" << name << "\")"
+                "->uponSignal(\"" << name << "\")"
                 ".onInterface(INTERFACE_NAME)"
                 ".call([this](" << argTypeStr << ")"
                 "{ this->on" << nameBigFirst << "(" << argStr << "); });" << endl;
@@ -268,9 +298,9 @@ std::tuple<std::string, std::string> ProxyGenerator::processSignals(const Nodes&
     return std::make_tuple(registrationSS.str(), declarationSS.str());
 }
 
-std::string ProxyGenerator::processProperties(const Nodes& properties) const
+std::tuple<std::string, std::string> ProxyGenerator::processProperties(const Nodes& properties) const
 {
-    std::ostringstream propertySS;
+    std::ostringstream propertySS, asyncDeclarationSS;
     for (const auto& property : properties)
     {
         auto propertyName = property->get("name");
@@ -282,25 +312,93 @@ std::string ProxyGenerator::processProperties(const Nodes& properties) const
         auto propertyArg = std::string("value");
         auto propertyTypeArg = std::string("const ") + propertyType + "& " + propertyArg;
 
+        bool asyncGet{false};
+        bool futureGet{false}; // Async property getter implemented by means of either std::future or callbacks
+        bool asyncSet{false};
+        bool futureSet{false}; // Async property setter implemented by means of either std::future or callbacks
+
+        Nodes annotations = (*property)["annotation"];
+        for (const auto& annotation : annotations)
+        {
+            const auto annotationName = annotation->get("name");
+            const auto annotationValue = annotation->get("value");
+
+            if (annotationName == "org.freedesktop.DBus.Property.Get.Async" && annotationValue == "client") // Server-side not supported (may be in the future)
+                asyncGet = true;
+            else if (annotationName == "org.freedesktop.DBus.Property.Get.Async.ClientImpl" && annotationValue == "callback")
+                futureGet = false;
+            else if (annotationName == "org.freedesktop.DBus.Property.Get.Async.ClientImpl" && (annotationValue == "future" || annotationValue == "std::future"))
+                futureGet = true;
+            else if (annotationName == "org.freedesktop.DBus.Property.Set.Async" && annotationValue == "client") // Server-side not supported (may be in the future)
+                asyncSet = true;
+            else if (annotationName == "org.freedesktop.DBus.Property.Set.Async.ClientImpl" && annotationValue == "callback")
+                futureSet = false;
+            else if (annotationName == "org.freedesktop.DBus.Property.Set.Async.ClientImpl" && (annotationValue == "future" || annotationValue == "std::future"))
+                futureSet = true;
+        }
+
         if (propertyAccess == "read" || propertyAccess == "readwrite")
         {
-            propertySS << tab << propertyType << " " << propertyNameSafe << "()" << endl
+            const std::string realRetType = (asyncGet ? (futureGet ? "std::future<sdbus::Variant>" : "sdbus::PendingAsyncCall") : propertyType);
+
+            propertySS << tab << realRetType << " " << propertyNameSafe << "()" << endl
                     << tab << "{" << endl;
-            propertySS << tab << tab << "return proxy_.getProperty(\"" << propertyName << "\")"
+            propertySS << tab << tab << "return proxy_->getProperty" << (asyncGet ? "Async" : "") << "(\"" << propertyName << "\")"
                             ".onInterface(INTERFACE_NAME)";
+            if (asyncGet)
+            {
+                auto nameBigFirst = propertyName;
+                nameBigFirst[0] = islower(nameBigFirst[0]) ? nameBigFirst[0] + 'A' - 'a' : nameBigFirst[0];
+
+                if (futureGet) // Async methods implemented through future
+                {
+                    propertySS << ".getResultAsFuture()";
+                }
+                else // Async methods implemented through callbacks
+                {
+                    propertySS << ".uponReplyInvoke([this](const sdbus::Error* error, const sdbus::Variant& value)"
+                                                   "{ this->on" << nameBigFirst << "PropertyGetReply(value.get<" << propertyType << ">(), error); })";
+
+                    asyncDeclarationSS << tab << "virtual void on" << nameBigFirst << "PropertyGetReply("
+                                       << "const " << propertyType << "& value, const sdbus::Error* error) = 0;" << endl;
+                }
+            }
             propertySS << ";" << endl << tab << "}" << endl << endl;
         }
 
         if (propertyAccess == "readwrite" || propertyAccess == "write")
         {
-            propertySS << tab << "void " << propertyNameSafe << "(" << propertyTypeArg << ")" << endl
-                    << tab << "{" << endl;
-            propertySS << tab << tab << "proxy_.setProperty(\"" << propertyName << "\")"
+            const std::string realRetType = (asyncSet ? (futureSet ? "std::future<void>" : "sdbus::PendingAsyncCall") : "void");
+
+            propertySS << tab << realRetType << " " << propertyNameSafe << "(" << propertyTypeArg << ")" << endl
+                       << tab << "{" << endl;
+            propertySS << tab << tab << (asyncSet ? "return " : "") << "proxy_->setProperty" << (asyncSet ? "Async" : "")
+                       << "(\"" << propertyName << "\")"
                             ".onInterface(INTERFACE_NAME)"
                             ".toValue(" << propertyArg << ")";
+
+            if (asyncSet)
+            {
+                auto nameBigFirst = propertyName;
+                nameBigFirst[0] = islower(nameBigFirst[0]) ? nameBigFirst[0] + 'A' - 'a' : nameBigFirst[0];
+
+                if (futureSet) // Async methods implemented through future
+                {
+                    propertySS << ".getResultAsFuture()";
+                }
+                else // Async methods implemented through callbacks
+                {
+                    propertySS << ".uponReplyInvoke([this](const sdbus::Error* error)"
+                                  "{ this->on" << nameBigFirst << "PropertySetReply(error); })";
+
+                    asyncDeclarationSS << tab << "virtual void on" << nameBigFirst << "PropertySetReply("
+                                       << "const sdbus::Error* error) = 0;" << endl;
+                }
+            }
+
             propertySS << ";" << endl << tab << "}" << endl << endl;
         }
     }
 
-    return propertySS.str();
+    return std::make_tuple(propertySS.str(), asyncDeclarationSS.str());
 }

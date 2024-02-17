@@ -61,12 +61,9 @@ TEST_F(SdbusTestObject, PingsViaPeerInterface)
 
 TEST_F(SdbusTestObject, AnswersMachineUuidViaPeerInterface)
 {
-    // If /etc/machine-id does not exist in your system (which is very likely because you have
-    // a non-systemd Linux), org.freedesktop.DBus.Peer.GetMachineId() will not work. To solve
-    // this, you can create /etc/machine-id yourself as symlink to /var/lib/dbus/machine-id,
-    // and then org.freedesktop.DBus.Peer.GetMachineId() will start to work.
-    if (::access("/etc/machine-id", F_OK) == -1)
-        GTEST_SKIP() << "/etc/machine-id file does not exist, GetMachineId() will not work";
+    if (::access("/etc/machine-id", F_OK) == -1 &&
+        ::access("/var/lib/dbus/machine-id", F_OK) == -1)
+        GTEST_SKIP() << "/etc/machine-id and /var/lib/dbus/machine-id files do not exist, GetMachineId() will not work";
 
     ASSERT_NO_THROW(m_proxy->GetMachineId());
 }
@@ -82,18 +79,101 @@ TEST_F(SdbusTestObject, GetsPropertyViaPropertiesInterface)
     ASSERT_THAT(m_proxy->Get(INTERFACE_NAME, "state").get<std::string>(), Eq(DEFAULT_STATE_VALUE));
 }
 
+TEST_F(SdbusTestObject, GetsPropertyAsynchronouslyViaPropertiesInterface)
+{
+    std::promise<std::string> promise;
+    auto future = promise.get_future();
+
+    m_proxy->GetAsync(INTERFACE_NAME, "state", [&](const sdbus::Error* err, sdbus::Variant value)
+    {
+        if (err == nullptr)
+           promise.set_value(value.get<std::string>());
+        else
+           promise.set_exception(std::make_exception_ptr(*err));
+    });
+
+    ASSERT_THAT(future.get(), Eq(DEFAULT_STATE_VALUE));
+}
+
+TEST_F(SdbusTestObject, GetsPropertyAsynchronouslyViaPropertiesInterfaceWithFuture)
+{
+    auto future = m_proxy->GetAsync(INTERFACE_NAME, "state", sdbus::with_future);
+
+    ASSERT_THAT(future.get().get<std::string>(), Eq(DEFAULT_STATE_VALUE));
+}
+
 TEST_F(SdbusTestObject, SetsPropertyViaPropertiesInterface)
 {
     uint32_t newActionValue = 2345;
 
-    m_proxy->Set(INTERFACE_NAME, "action", newActionValue);
+    m_proxy->Set(INTERFACE_NAME, "action", sdbus::Variant{newActionValue});
 
+    ASSERT_THAT(m_proxy->action(), Eq(newActionValue));
+}
+
+TEST_F(SdbusTestObject, SetsPropertyAsynchronouslyViaPropertiesInterface)
+{
+    uint32_t newActionValue = 2346;
+    std::promise<void> promise;
+    auto future = promise.get_future();
+
+    m_proxy->SetAsync(INTERFACE_NAME, "action", sdbus::Variant{newActionValue}, [&](const sdbus::Error* err)
+    {
+        if (err == nullptr)
+            promise.set_value();
+        else
+            promise.set_exception(std::make_exception_ptr(*err));
+    });
+
+    ASSERT_NO_THROW(future.get());
+    ASSERT_THAT(m_proxy->action(), Eq(newActionValue));
+}
+
+TEST_F(SdbusTestObject, SetsPropertyAsynchronouslyViaPropertiesInterfaceWithFuture)
+{
+    uint32_t newActionValue = 2347;
+
+    auto future = m_proxy->SetAsync(INTERFACE_NAME, "action", sdbus::Variant{newActionValue}, sdbus::with_future);
+
+    ASSERT_NO_THROW(future.get());
     ASSERT_THAT(m_proxy->action(), Eq(newActionValue));
 }
 
 TEST_F(SdbusTestObject, GetsAllPropertiesViaPropertiesInterface)
 {
     const auto properties = m_proxy->GetAll(INTERFACE_NAME);
+
+    ASSERT_THAT(properties, SizeIs(3));
+    EXPECT_THAT(properties.at("state").get<std::string>(), Eq(DEFAULT_STATE_VALUE));
+    EXPECT_THAT(properties.at("action").get<uint32_t>(), Eq(DEFAULT_ACTION_VALUE));
+    EXPECT_THAT(properties.at("blocking").get<bool>(), Eq(DEFAULT_BLOCKING_VALUE));
+}
+
+TEST_F(SdbusTestObject, GetsAllPropertiesAsynchronouslyViaPropertiesInterface)
+{
+    std::promise<std::map<std::string, sdbus::Variant>> promise;
+    auto future = promise.get_future();
+
+    m_proxy->GetAllAsync(INTERFACE_NAME, [&](const sdbus::Error* err, std::map<std::string, sdbus::Variant> value)
+    {
+        if (err == nullptr)
+            promise.set_value(std::move(value));
+        else
+            promise.set_exception(std::make_exception_ptr(*err));
+    });
+    const auto properties = future.get();
+
+    ASSERT_THAT(properties, SizeIs(3));
+    EXPECT_THAT(properties.at("state").get<std::string>(), Eq(DEFAULT_STATE_VALUE));
+    EXPECT_THAT(properties.at("action").get<uint32_t>(), Eq(DEFAULT_ACTION_VALUE));
+    EXPECT_THAT(properties.at("blocking").get<bool>(), Eq(DEFAULT_BLOCKING_VALUE));
+}
+
+TEST_F(SdbusTestObject, GetsAllPropertiesAsynchronouslyViaPropertiesInterfaceWithFuture)
+{
+    auto future = m_proxy->GetAllAsync(INTERFACE_NAME, sdbus::with_future);
+
+    auto properties = future.get();
 
     ASSERT_THAT(properties, SizeIs(3));
     EXPECT_THAT(properties.at("state").get<std::string>(), Eq(DEFAULT_STATE_VALUE));
@@ -201,7 +281,13 @@ TEST_F(SdbusTestObject, EmitsInterfacesAddedSignalForAllObjectInterfaces)
             , const std::map<std::string, std::map<std::string, sdbus::Variant>>& interfacesAndProperties )
     {
         EXPECT_THAT(objectPath, Eq(OBJECT_PATH));
+#if LIBSYSTEMD_VERSION<=250
         EXPECT_THAT(interfacesAndProperties, SizeIs(5)); // INTERFACE_NAME + 4 standard interfaces
+#else
+        // Since systemd v251, ObjectManager standard interface is not listed among the interfaces
+        // if the object does not have object manager functionality explicitly enabled.
+        EXPECT_THAT(interfacesAndProperties, SizeIs(4)); // INTERFACE_NAME + 3 standard interfaces
+#endif
 #if LIBSYSTEMD_VERSION<=244
         // Up to sd-bus v244, all properties are added to the list, i.e. `state', `action', and `blocking' in this case.
         EXPECT_THAT(interfacesAndProperties.at(INTERFACE_NAME), SizeIs(3));
@@ -248,7 +334,13 @@ TEST_F(SdbusTestObject, EmitsInterfacesRemovedSignalForAllObjectInterfaces)
                                                                           , const std::vector<std::string>& interfaces )
     {
         EXPECT_THAT(objectPath, Eq(OBJECT_PATH));
+#if LIBSYSTEMD_VERSION<=250
         ASSERT_THAT(interfaces, SizeIs(5)); // INTERFACE_NAME + 4 standard interfaces
+#else
+        // Since systemd v251, ObjectManager standard interface is not listed among the interfaces
+        // if the object does not have object manager functionality explicitly enabled.
+        ASSERT_THAT(interfaces, SizeIs(4)); // INTERFACE_NAME + 3 standard interfaces
+#endif
         signalReceived = true;
     };
 
