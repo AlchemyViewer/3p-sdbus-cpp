@@ -38,7 +38,7 @@ mkdir -p "$stage/lib"/{debug,release}
 mkdir -p "$stage/include/sdbus-c++"
 mkdir -p "$stage/LICENSES"
 
-echo "1.4.0" > "${stage}/VERSION.txt"
+echo "1.5.0" > "${stage}/VERSION.txt"
 
 pushd "$SDBUSCPP_DIR"
     case "$AUTOBUILD_PLATFORM" in
