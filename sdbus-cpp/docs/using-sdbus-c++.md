@@ -75,13 +75,19 @@ add_custom_command(
 Solving libsystemd dependency
 -----------------------------
 
-sdbus-c++ depends on libsystemd, a C library that is part of [systemd](https://github.com/systemd/systemd) and that contains underlying sd-bus implementation.
+sdbus-c++ depends on sd-bus API, which is implemented in libsystemd, a C library that is part of [systemd](https://github.com/systemd/systemd).
 
 Minimum required libsystemd shared library version is 0.20.0 (which corresponds to minimum systemd version 236).
 
 If your target Linux distribution is already based on systemd ecosystem of version 236 and higher, then there is no additional effort, just make sure you have corresponding systemd header files available (provided by `libsystemd-dev` package on Debian/Ubuntu, for example), and you may go on building sdbus-c++ seamlessly.
 
-However, sdbus-c++ can perfectly be used in non-systemd environments as well. There are two ways to approach this:
+However, sdbus-c++ can perfectly be used in non-systemd environments as well. If `libsystemd` is not found in the system when configuring sdbus-c++, then
+
+1. sdbus-c++ will try to find `libelogind`, which is an extracted logind from original systemd containing sd-bus implementation. If not found, then
+
+2. sdbus-c++ will try to find `basu`, which is just sd-bus implementation extracted from systemd.
+
+On systems where neither of these is available, we can build sd-bus as a shared lib manually or we can (conveniently) instruct sdbus-c++ to build and integrate sd-bus into itself for us.
 
 ### Building and distributing libsystemd as a shared library yourself
 
@@ -101,7 +107,7 @@ $ ninja libsystemd.so.0.26.0  # or another version number depending which system
 
 ### Building and distributing libsystemd as part of sdbus-c++
 
-sdbus-c++ provides `BUILD_LIBSYSTEMD` configuration option. When turned on, sdbus-c++ will automatically download and build libsystemd as a static library and make it an opaque part of sdbus-c++ shared library for you. This is the most convenient and effective approach to build, distribute and use sdbus-c++ as a self-contained, systemd-independent library in non-systemd environments. Just make sure your build machine has all dependencies needed by libsystemd build process. That includes, among others, `meson`, `ninja`, `git`, `gperf`, and -- primarily -- libraries and library headers for `libmount`, `libcap` and `librt` (part of glibc). Be sure to check out the systemd documentation for the  Also, when distributing, make sure these dependency libraries are installed on the production machine.
+sdbus-c++ provides `BUILD_LIBSYSTEMD` configuration option. When turned on, sdbus-c++ will automatically download and build libsystemd as a static library and make it an opaque part of sdbus-c++ shared library for you. This is the most convenient and effective approach to build, distribute and use sdbus-c++ as a self-contained, systemd-independent library in non-systemd environments. Just make sure your build machine has all dependencies needed by libsystemd build process. That includes, among others, `meson`, `ninja`, `git`, `gperf`, and -- primarily -- libraries and library headers for `libmount`, `libcap` and `librt` (part of glibc). Also, when distributing, make sure these dependency libraries are installed on the production machine.
 
 You may additionally set the `LIBSYSTEMD_VERSION` configuration flag to fine-tune the version of systemd to be taken in. (The default value is 242).
 
@@ -388,6 +394,27 @@ Subsequently, we invoke two RPC calls to object's `concatenate()` method. We cre
 
 Please note that we can create and destroy D-Bus object proxies dynamically, at any time during runtime, even when they share a common D-Bus connection and there is an active event loop upon the connection. So managing D-Bus object proxies' lifecycle (creating and destroying D-Bus object proxies) is completely thread-safe.
 
+### Opening bus connections in sdbus-c++
+
+There are several factory methods to create a bus connection object in sdbus-c++:
+
+* `createConnection()` - opens a connection to the system bus
+* `createConnection(const std::string& name)` - opens a connection with the given name to the system bus
+* `createDefaultBusConnection()` - opens a connection to the session bus when in a user context, and a connection to the system bus, otherwise
+* `createDefaultBusConnection(const std::string& name)` - opens a connection with the given name to the session bus when in a user context, and a connection with the given name to the system bus, otherwise
+* `createSystemBusConnection()` - opens a connection to the system bus
+* `createSystemBusConnection(const std::string& name)` - opens a connection with the given name to the system bus
+* `createSessionBusConnection()` - opens a connection to the session bus
+* `createSessionBusConnection(const std::string& name)` - opens a connection with the given name to the session bus
+* `createSessionBusConnectionWithAddress(const std::string& address)` - opens a connection to the session bus at a custom address
+* `createRemoteSystemBusConnection(const std::string& host)` - opens a connection to the system bus on a remote host using ssh
+* `createDirectBusConnection(const std::string& address)` - opens direct D-Bus connection at a custom address (see [Using direct (peer-to-peer) D-Bus connections](#using-direct-peer-to-peer-d-bus-connections))
+* `createDirectBusConnection(int fd)` - opens direct D-Bus connection at the given file descriptor (see [Using direct (peer-to-peer) D-Bus connections](#using-direct-peer-to-peer-d-bus-connections))
+* `createServerBus(int fd)` - opens direct D-Bus connection at the given file descriptor as a server (see [Using direct (peer-to-peer) D-Bus connections](#using-direct-peer-to-peer-d-bus-connections))
+* `createBusConnection(sd_bus *bus)` - creates a connection directly from the underlying sd_bus connection instance (which has been created and set up upfront directly through sd-bus API).
+
+For more information, peek into [`IConnection.h`](/include/sdbus-c++/IConnection.h) where these functions are declared and documented.
+
 ### Working with D-Bus connections in sdbus-c++
 
 The design of D-Bus connections in sdbus-c++ allows for certain flexibility and enables users to choose simplicity over scalability or scalability (at a finer granularity of user's choice) at the cost of slightly decreased simplicity.
@@ -565,6 +592,7 @@ We recommend that sdbus-c++ users prefer the convenience API to the lower level,
 >         assert(e->getMessage() == "Failed to deserialize a int32 value");
 >     }
 > ```
+> Signature mismatch in signal handlers is probably the most common reason why signals are not received in the client, while we can see them on the bus with `dbus-monitor`. Use `const sdbus::Error*`-based callback variant and inspect the error to check if that's the cause of such problems.
 
 > **_Tip_:** When registering a D-Bus object, we can additionally provide names of input and output parameters of its methods and names of parameters of its signals. When the object is introspected, these names are listed in the resulting introspection XML, which improves the description of object's interfaces:
 > ```c++
@@ -1512,10 +1540,10 @@ The above mapping between D-Bus and C++ types is what sdbus-c++ provides by defa
 
 We need two things to do that:
 
-* implement `sdbus::Message` insertion and extraction operators, so sdbus-c++ knows how to serialize/deserialize our custom type,
+* implement `sdbus::Message` insertion (serialization) and extraction (deserialization) operators, so sdbus-c++ knows how to serialize/deserialize our custom type,
 * specialize `sdbus::signature_of` template for our custom type, so sdbus-c++ knows the mapping to D-Bus type and other necessary information about our type.
 
-Say, we would like to represent D-Bus arrays as `std::list`s in our application. Since sdbus-c++ comes with pre-defined support for `std::vector`s, `std::array`s and `std::span`s as D-Bus array representations, we have to provide an extension:
+Say, we would like to represent D-Bus arrays as `std::list`s in our application. Since sdbus-c++ comes with pre-defined support for `std::vector`s, `std::array`s and `std::span`s as D-Bus array representations, we have to provide an extension. To implement message serialization and deserialization functions for `std::list`, we can simply copy the sdbus-c++ implementation of these functions for `std::vector`, and simply adjust for `std::list`. Then we provide `signature_of` specialization, again written on terms of one specialized for `std::vector`:
 
 ```c++
 #include <list>
@@ -1568,12 +1596,11 @@ template <typename _Element, typename _Allocator>
 struct sdbus::signature_of<std::list<_Element, _Allocator>>
         : sdbus::signature_of<std::vector<_Element, _Allocator>>
 {};
-};
 ```
 
 Then we can simply use `std::list`s, serialize/deserialize them in a D-Bus message, in D-Bus method calls or return values... and they will be simply transmitted as D-Bus arrays.
 
-As another example, say we have our custom type `my::Struct` which we'd like to use as a D-Bus structure representation (sdbus-c++ provides `sdbus::Struct` type for that, but we don't want to use it because using our custom type directly is more convenient). Again, we have to provide type traits and message serialization/deserialization functions for our custom type. We build our functions and specializations on top of `sdbus::Struct`, so we don't have to copy and write a lot of boiler-plate:
+As another example, say we have our custom type `my::Struct` which we'd like to use as a D-Bus structure representation (sdbus-c++ provides `sdbus::Struct` type for that, but we don't want to use it because using our custom type directly is more convenient). Again, we have to provide type traits and message serialization/deserialization functions for our custom type. We build our functions and specializations on top of `sdbus::Struct`, so we don't have to copy and write a lot of boiler-plate. Serialization/deserialization functions can be placed in the same namespace as our custom type, and will be found thanks to the ADR lookup. The `signature_of` specialization must always be in either `sdbus` namespace or in a global namespace:
 
 ```c++
 namespace my {
@@ -1596,7 +1623,7 @@ namespace my {
         sdbus::Struct s{std::forward_as_tuple(items.i, items.s, items.l)};
         return msg >> s;
     }
-}
+} // namespace my
 
 template <>
 struct sdbus::signature_of<my::Struct>
@@ -1611,7 +1638,7 @@ Live examples of extending sdbus-c++ types can be found in [Message unit tests](
 Support for match rules
 -----------------------
 
-`IConnection` class provides `addMatch` method that you can use to install match rules. An associated callback handler will be called upon an incoming message matching given match rule. There is support for both client-owned and floating (library-owned) match rules. Consult `IConnection` header or sdbus-c++ doxygen documentation for more information.
+`IConnection` class provides `addMatch` and `addMatchAsync` family of methods that you can use to install match rules on that bus connection. An associated callback handler will be called when an incoming D-Bus message matches the given match rule. Clients can decide whether they own and control the match rule lifetime, or whether the match rule lifetime is bound the connection object lifetime (so-called floating match rule). Consult `IConnection` header or sdbus-c++ doxygen documentation for more information.
 
 Using direct (peer-to-peer) D-Bus connections
 ---------------------------------------------
