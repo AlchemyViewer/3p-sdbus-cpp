@@ -108,12 +108,20 @@ void Connection::requestName(const std::string& name)
 
     auto r = iface_->sd_bus_request_name(bus_.get(), name.c_str(), 0);
     SDBUS_THROW_ERROR_IF(r < 0, "Failed to request bus name", -r);
+
+    // In some cases we need to explicitly notify the event loop
+    // to process messages that may have arrived while executing the call.
+    notifyEventLoop(eventFd_.fd);
 }
 
 void Connection::releaseName(const std::string& name)
 {
     auto r = iface_->sd_bus_release_name(bus_.get(), name.c_str());
     SDBUS_THROW_ERROR_IF(r < 0, "Failed to release bus name", -r);
+
+    // In some cases we need to explicitly notify the event loop
+    // to process messages that may have arrived while executing the call.
+    notifyEventLoop(eventFd_.fd);
 }
 
 std::string Connection::getUniqueName() const
@@ -217,17 +225,11 @@ uint64_t Connection::getMethodCallTimeout() const
 
 Slot Connection::addMatch(const std::string& match, message_handler callback)
 {
-    auto matchInfo = std::make_unique<MatchInfo>(MatchInfo{std::move(callback), *this, {}});
+    SDBUS_THROW_ERROR_IF(!callback, "Invalid match callback handler provided", EINVAL);
 
-    auto messageHandler = [](sd_bus_message *sdbusMessage, void *userData, sd_bus_error */*retError*/) -> int
-    {
-        auto* matchInfo = static_cast<MatchInfo*>(userData);
-        auto message = Message::Factory::create<PlainMessage>(sdbusMessage, &matchInfo->connection.getSdBusInterface());
-        matchInfo->callback(message);
-        return 0;
-    };
+    auto matchInfo = std::make_unique<MatchInfo>(MatchInfo{std::move(callback), {}, *this, {}});
 
-    auto r = iface_->sd_bus_add_match(bus_.get(), &matchInfo->slot, match.c_str(), std::move(messageHandler), matchInfo.get());
+    auto r = iface_->sd_bus_add_match(bus_.get(), &matchInfo->slot, match.c_str(), &Connection::sdbus_match_callback, matchInfo.get());
     SDBUS_THROW_ERROR_IF(r < 0, "Failed to add match", -r);
 
     return {matchInfo.release(), [this](void *ptr)
@@ -241,6 +243,34 @@ Slot Connection::addMatch(const std::string& match, message_handler callback)
 void Connection::addMatch(const std::string& match, message_handler callback, floating_slot_t)
 {
     floatingMatchRules_.push_back(addMatch(match, std::move(callback)));
+}
+
+Slot Connection::addMatchAsync(const std::string& match, message_handler callback, message_handler installCallback)
+{
+    SDBUS_THROW_ERROR_IF(!callback, "Invalid match callback handler provided", EINVAL);
+
+    sd_bus_message_handler_t sdbusInstallCallback = installCallback ? &Connection::sdbus_match_install_callback : nullptr;
+    auto matchInfo = std::make_unique<MatchInfo>(MatchInfo{std::move(callback), std::move(installCallback), *this, {}});
+
+    auto r = iface_->sd_bus_add_match_async( bus_.get()
+                                           , &matchInfo->slot
+                                           , match.c_str()
+                                           , &Connection::sdbus_match_callback
+                                           , sdbusInstallCallback
+                                           , matchInfo.get());
+    SDBUS_THROW_ERROR_IF(r < 0, "Failed to add match", -r);
+
+    return {matchInfo.release(), [this](void *ptr)
+    {
+        auto* matchInfo = static_cast<MatchInfo*>(ptr);
+        iface_->sd_bus_slot_unref(matchInfo->slot);
+        std::default_delete<MatchInfo>{}(matchInfo);
+    }};
+}
+
+void Connection::addMatchAsync(const std::string& match, message_handler callback, message_handler installCallback, floating_slot_t)
+{
+    floatingMatchRules_.push_back(addMatchAsync(match, std::move(callback), std::move(installCallback)));
 }
 
 Slot Connection::addObjectVTable( const std::string& objectPath
@@ -563,6 +593,22 @@ std::vector</*const */char*> Connection::to_strv(const std::vector<std::string>&
         strv.push_back(const_cast<char*>(str.c_str()));
     strv.push_back(nullptr);
     return strv;
+}
+
+int Connection::sdbus_match_callback(sd_bus_message *sdbusMessage, void *userData, sd_bus_error *retError)
+{
+    auto* matchInfo = static_cast<MatchInfo*>(userData);
+    auto message = Message::Factory::create<PlainMessage>(sdbusMessage, &matchInfo->connection.getSdBusInterface());
+    auto ok = invokeHandlerAndCatchErrors([&](){ matchInfo->callback(message); }, retError);
+    return ok ? 0 : -1;
+}
+
+int Connection::sdbus_match_install_callback(sd_bus_message *sdbusMessage, void *userData, sd_bus_error *retError)
+{
+    auto* matchInfo = static_cast<MatchInfo*>(userData);
+    auto message = Message::Factory::create<PlainMessage>(sdbusMessage, &matchInfo->connection.getSdBusInterface());
+    auto ok = invokeHandlerAndCatchErrors([&](){ matchInfo->installCallback(message); }, retError);
+    return ok ? 0 : -1;
 }
 
 Connection::EventFd::EventFd()

@@ -50,9 +50,13 @@ $ sudo cmake --build . --target install
 
       Option for building sdbus-c++ stress tests. Default value: `OFF`.
 
+    * `INSTALL_TESTS` [boolean]
+
+      Option for installing tests that were built. Default value: `OFF`.
+
     * `TESTS_INSTALL_PATH` [string]
 
-      Path where the test binaries shall get installed. Default value: `/opt/test/bin`.
+      Path where the test binaries shall get installed. Default value: `${CMAKE_INSTALL_PREFIX}/tests/sdbus-c++` (previously: `/opt/test/bin`).
 
 * `BUILD_LIBSYSTEMD` [boolean]
 
@@ -82,7 +86,7 @@ Dependencies
 ------------
 
 * `C++17` - the library uses C++17 features.
-* `libsystemd` - systemd library containing sd-bus implementation. This library is part of systemd. Systemd at least v236 is needed. (In case you have a non-systemd environment, don't worry, see [Solving libsystemd dependency](docs/using-sdbus-c++.md#solving-libsystemd-dependency) for more information.)
+* `libsystemd`/`libelogind`/`basu` - libraries containing sd-bus implementation that sdbus-c++ is written around. In case of `libsystemd` and `libelogind`, version >= 236 is needed. (In case you have a non-systemd environment, don't worry, see [Solving libsystemd dependency](docs/using-sdbus-c++.md#solving-libsystemd-dependency) for more information.)
 * `googletest` - google unit testing framework, only necessary when building tests, will be downloaded and built automatically.
 * `pkgconfig` - required for sdbus-c++ to be able to find some dependency packages.
 * `expat` - necessary when building xml2cpp code generator (`BUILD_CODE_GEN` option is ON).
