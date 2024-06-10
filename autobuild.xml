@@ -65,7 +65,6 @@
           </map>
           <key>manifest</key>
           <array>
-            <string>lib/debug/libsdbus-c++*</string>
             <string>lib/release/libsdbus-c++*</string>
           </array>
           <key>name</key>
