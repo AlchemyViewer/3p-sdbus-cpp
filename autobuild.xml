@@ -4,7 +4,7 @@
     <key>package_description</key>
     <map>
       <key>canonical_repo</key>
-      <string>https://git.alchemyviewer.org/alchemy/thirdparty/3p-sdbus-cpp</string>
+      <string>https://github.com/AlchemyViewer/3p-sdbus-cpp</string>
       <key>copyright</key>
       <string>Copyright (c) 22016 - 2021 KISTLER INSTRUMENTE AG, Winterthur, Switzerland, (C) 2016 - 2022 Stanislav Angelovic stanislav.angelovic@protonmail.com</string>
       <key>description</key>

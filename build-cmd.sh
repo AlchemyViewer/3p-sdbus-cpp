@@ -63,17 +63,10 @@ pushd "$SDBUSCPP_DIR"
             # but which do nonetheless.
             #
             unset DISTCC_HOSTS CFLAGS CPPFLAGS CXXFLAGS
-        
+
             # Default target per --address-size
-            opts="${TARGET_OPTS:--m$AUTOBUILD_ADDRSIZE}"
-            DEBUG_COMMON_FLAGS="$opts -Og -g -fPIC -DPIC"
-            RELEASE_COMMON_FLAGS="$opts -O3 -ffast-math -g -fPIC -DPIC -fstack-protector-strong -D_FORTIFY_SOURCE=2"
-            DEBUG_CFLAGS="$DEBUG_COMMON_FLAGS"
-            RELEASE_CFLAGS="$RELEASE_COMMON_FLAGS"
-            DEBUG_CXXFLAGS="$DEBUG_COMMON_FLAGS -std=c++17"
-            RELEASE_CXXFLAGS="$RELEASE_COMMON_FLAGS -std=c++17"
-            DEBUG_CPPFLAGS="-DPIC"
-            RELEASE_CPPFLAGS="-DPIC -D_FORTIFY_SOURCE=2"
+            opts_c="${TARGET_OPTS:--m$AUTOBUILD_ADDRSIZE $LL_BUILD_RELEASE_CFLAGS}"
+            opts_cxx="${TARGET_OPTS:--m$AUTOBUILD_ADDRSIZE $LL_BUILD_RELEASE_CXXFLAGS}"
  
             # Handle any deliberate platform targeting
             if [ -z "${TARGET_CPPFLAGS:-}" ]; then
@@ -84,35 +77,15 @@ pushd "$SDBUSCPP_DIR"
                 export CPPFLAGS="$TARGET_CPPFLAGS"
             fi
 
-            # Debug
-            mkdir -p "build_debug"
-            pushd "build_debug"
-                CFLAGS="$DEBUG_CFLAGS" \
-                CXXFLAGS="$DEBUG_CXXFLAGS" \
-                CPPFLAGS="$DEBUG_CPPFLAGS" \
-                    cmake ../ -G"Ninja" \
-                        -DCMAKE_BUILD_TYPE=Debug \
-                        -DCMAKE_C_FLAGS="$DEBUG_CFLAGS" \
-                        -DCMAKE_CXX_FLAGS="$DEBUG_CXXFLAGS" \
-                        -DCMAKE_INSTALL_PREFIX="$stage/install_debug"
-
-                cmake --build . --config Debug --parallel $AUTOBUILD_CPU_COUNT
-                cmake --install . --config Debug
-
-                mkdir -p ${stage}/lib/debug
-                mv ${stage}/install_debug/lib/*.so* ${stage}/lib/debug
-            popd
-
             # Release
             mkdir -p "build_release"
             pushd "build_release"
-                CFLAGS="$RELEASE_CFLAGS" \
-                CXXFLAGS="$RELEASE_CXXFLAGS" \
-                CPPFLAGS="$RELEASE_CPPFLAGS" \
+                CFLAGS="$opts_c" \
+                CXXFLAGS="$opts_cxx" \
                     cmake ../ -G"Ninja" \
                         -DCMAKE_BUILD_TYPE=Release \
-                        -DCMAKE_C_FLAGS="$RELEASE_CFLAGS" \
-                        -DCMAKE_CXX_FLAGS="$RELEASE_CXXFLAGS" \
+                        -DCMAKE_C_FLAGS="$opts_c" \
+                        -DCMAKE_CXX_FLAGS="$opts_cxx" \
                         -DCMAKE_INSTALL_PREFIX="$stage/install_release"
 
                 cmake --build . --config Release --parallel $AUTOBUILD_CPU_COUNT
